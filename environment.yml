@@ -1,0 +1,14 @@
+# hardware deploy env
+name: env_deploy
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - matplotlib
+  - pyyaml
+  - pytorch
+  - pip
+  - pip:
+    - "mujoco>=3.5.0"
+    - "warp-lang>=1.11.1"
