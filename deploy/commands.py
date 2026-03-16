@@ -74,6 +74,9 @@ class CommandsNode(Node):
         command_freq = 100.0
         self.command_timer = self.create_timer(1.0 / command_freq, self.publish_command)
 
+        print("Command node initialized.")
+
+
     # initialize the joystick
     def init_joystick(self):
 
@@ -110,9 +113,9 @@ class CommandsNode(Node):
 
         # update
         try:
-            LS_X =  self.joystick.get_axis(0)
+            LS_X = -self.joystick.get_axis(0) # invert x-axis
             LS_Y = -self.joystick.get_axis(1) # invert y-axis
-            RS_X =  self.joystick.get_axis(3) 
+            RS_X = -self.joystick.get_axis(3) # invert x-axis
             RS_Y = -self.joystick.get_axis(4) # invert y-axis
             self.joystick_state.LS_X = LS_X if abs(LS_X) > self.deadzone else 0.0
             self.joystick_state.LS_Y = LS_Y if abs(LS_Y) > self.deadzone else 0.0
@@ -187,7 +190,7 @@ class CommandsNode(Node):
             is_connected = 1.0
             vx_cmd = self.joystick_state.LS_Y
             vy_cmd = self.joystick_state.LS_X
-            omega_cmd = -self.joystick_state.RS_X
+            omega_cmd = self.joystick_state.RS_X
 
         # publish the command
         cmd_msg = Float32MultiArray()
@@ -213,7 +216,7 @@ def main():
     # create command node
     cmd_node = CommandsNode()
 
-    # execute the simulation
+    # execute the commands
     try:
         # spin the node
         rclpy.spin(cmd_node)

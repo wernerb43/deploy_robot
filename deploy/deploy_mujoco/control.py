@@ -51,6 +51,7 @@ class ControlNode(Node):
         self.action_pub = self.create_publisher(Float32MultiArray, 'action', 10)
 
         # ROS subscribers
+        self.cmd_sub = self.create_subscription(Float32MultiArray, 'command', self.cmd_callback, 10)
         self.imu_sensor_sub = self.create_subscription(Float32MultiArray, 'imu_data', self.imu_sensor_callback, 10)
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'joint_data', self.joint_sensor_callback, 10)
         self.time_sub = self.create_subscription(Float64, 'sim_time', self.time_callback, 10)
@@ -65,7 +66,10 @@ class ControlNode(Node):
         self.qvel_joints = np.zeros(len(self.qpos_joints_default))
         self.sim_time = 0.0
 
-        # initalize the action
+        # initialize command
+        self.cmd = np.zeros(3)
+
+        # initialize the action
         self.action = np.zeros(self.act_size)
 
         print("Control node initialized.")
@@ -122,6 +126,19 @@ class ControlNode(Node):
     # HELPERS
     #################################################################
 
+    # command from the command node
+    def cmd_callback(self, msg):
+        data = np.array(msg.data, dtype=np.float32)
+        
+        # joystick
+        joystick_is_connected = (data[0] > 0.5)
+        vx_cmd = data[1]
+        vy_cmd = data[2]
+        omega_cmd = data[3]
+
+        # update the command with the scaling
+        self.cmd = np.array([vx_cmd, vy_cmd, omega_cmd], dtype=np.float32)
+
     # IMU data: [quat(4), omega(3)]
     def imu_sensor_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
@@ -142,9 +159,6 @@ class ControlNode(Node):
     # build the observation vector for the policy
     def build_observation(self):
 
-        # command vector
-        cmd = np.zeros(3)
-
         # base orientation state
         omega = self.omega * self.ang_vel_scale
         gravity_orientation = get_gravity_orientation(self.quat)
@@ -163,7 +177,7 @@ class ControlNode(Node):
         obs = np.zeros(self.obs_size, dtype=np.float32)
         obs[:3] = omega
         obs[3:6] = gravity_orientation
-        obs[6:9] = cmd * self.cmd_scale
+        obs[6:9] = self.cmd * self.cmd_scale
         obs[9 : 9 + self.act_size] = qj
         obs[9 + self.act_size : 9 + 2 * self.act_size] = dqj
         obs[9 + 2 * self.act_size : 9 + 3 * self.act_size] = self.action
@@ -216,7 +230,7 @@ def main(args=None):
     # create the simulation node
     ctrl_node = ControlNode(args.config)
 
-    # execute the simulation
+    # execute the policy
     try:
         # spin the node
         rclpy.spin(ctrl_node)
