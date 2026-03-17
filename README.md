@@ -2,6 +2,7 @@
 Repo for deploying on hardware. 
 
 ## Installation
+
 ### Setting the environment variable
 Set the directory of this repo as a environment variable in your `~/.bashrc` file, for example:
 ```bash
@@ -19,4 +20,11 @@ Use `conda` and install via:
 ```bash
 conda env create -f environment.yml
 conda activate env_deploy
+```
+
+### Unitree SDK
+After the `conda` environment is set up, install the Unitree SDK inside the conda environment.
+Make sure you are in the `env_deploy` conda environment by using `conda activate env_deploy`, and then follow the Unitree SDK installation instructions here:
+```bash
+https://github.com/unitreerobotics/unitree_sdk2_python
 ```

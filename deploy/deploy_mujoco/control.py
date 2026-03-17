@@ -23,7 +23,7 @@ ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 sys.path.append(ROOT_DIR)
 
 # custom imports
-from utils.kinematics import get_gravity_orientation
+from utils.unitree_rotation import get_gravity_orientation
 from utils.policy_utils import *
 
 
@@ -55,7 +55,7 @@ class ControlNode(Node):
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'joint_data', self.joint_sensor_callback, 10)
         self.time_sub = self.create_subscription(Float64, 'sim_time', self.time_callback, 10)
 
-        # control timer
+        # control timer to run the policy at a fixed frequency
         self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
 
         # sensor state
