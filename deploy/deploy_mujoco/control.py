@@ -6,7 +6,6 @@
 
 # standard imports
 import argparse
-import time
 
 # other imports
 import numpy as np
