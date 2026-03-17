@@ -5,6 +5,7 @@
 ##
 
 # standard imports
+import argparse
 import numpy as np
 
 # mujoco imports
@@ -16,19 +17,28 @@ import os
 ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 
 ###########################################################
-# PICK THE MODEL TO LOAD
+# PARSE THE MODEL TO LOAD
 ###########################################################
 
-# Load the model from XML
-xml_file = "g1_12dof.xml"
-# xml_file = "g1_29dof_rev_1_0.xml"
+parser = argparse.ArgumentParser(
+    description="Visualize a MuJoCo model."
+)
+parser.add_argument(
+     "--model", 
+     type=str, 
+     required=True,
+     help="Name of the XML model file to load (must be in the 'models' directory)."
+)
+args = parser.parse_args()
 
 ###########################################################
 # MODEL INFO 
 ###########################################################
 
+xml_file = ROOT_DIR + "/models/" + args.model
+
 # load and launch the model
-model = mujoco.MjModel.from_xml_path(ROOT_DIR + "/models/" + xml_file)
+model = mujoco.MjModel.from_xml_path(xml_file)
 data = mujoco.MjData(model)
 
 # set the print precision
