@@ -24,7 +24,7 @@ sys.path.append(ROOT_DIR)
 
 # custom imports
 from utils.unitree_rotation import get_gravity_orientation
-from utils.policy_utils import *
+from utils.policy import Policy
 
 
 ############################################################################
@@ -109,16 +109,17 @@ class ControlNode(Node):
         policy_path_full = ROOT_DIR + "/policy/" + policy_path
         
         # load the policy
-        self.policy, self.policy_type = load_policy(policy_path_full)
+        self.policy = Policy(policy_path_full)
 
-        # get input and output sizes
-        self.obs_size, self.act_size = get_policy_io_size(self.policy, self.policy_type)
+        # alias for convenience
+        self.obs_size = self.policy.input_size
+        self.act_size = self.policy.output_size
 
         print(f"Loading policy from [{policy_path_full}].")
-        print(f"    Policy type: {self.policy_type}.")
-        print(f"    Input size: {self.obs_size}.")
-        print(f"    Output size: {self.act_size}.")
-        print(f"    Control frequency: {1.0 / self.ctrl_dt} Hz.")
+        print(f"    Policy type: {self.policy._policy_type}")
+        print(f"    Input size: {self.obs_size}")
+        print(f"    Output size: {self.act_size}")
+        print(f"    Control frequency: {1.0 / self.ctrl_dt} Hz")
 
 
     #################################################################
@@ -191,11 +192,10 @@ class ControlNode(Node):
         obs = self.build_observation()
         
         # target joint positions (PD control)
-        action = policy_inference(self.policy, self.policy_type, obs)
-        self.action = action
+        self.action = self.policy.inference(obs)
 
         # scale the action
-        qpos_joints_des = action * self.action_scale + self.qpos_joints_default
+        qpos_joints_des = self.action * self.action_scale + self.qpos_joints_default
 
         # publish the action
         action_msg = Float32MultiArray()

@@ -10,7 +10,7 @@ export DEPLOY_ROOT_DIR="/home/sergio/projects/deploy_robot"
 ```
 
 ### ROS2
-Use `ROS2 Humble` to communicate across different pieces of code. Install instrictions are here:
+Use `ROS2 Humble` to communicate across different pieces of code. Install instructions are here:
 ```bash
 https://docs.ros.org/en/humble/Installation.html
 ```
