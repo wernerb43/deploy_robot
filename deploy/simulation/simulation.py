@@ -129,7 +129,12 @@ class SimulationNode(Node):
         print(f"    nu: {self.nu}")
 
         # launch the viewer
-        self.viewer = mujoco.viewer.launch_passive(self.mj_model, self.mj_data)
+        self.viewer = mujoco.viewer.launch_passive(
+            self.mj_model,
+            self.mj_data,
+            show_left_ui=False,  # disable left tab (use 'Tab' for toggling on/off)
+            show_right_ui=False, # disable right tab (use 'Tab + Shift' for toggling on/off)
+        )
         self.viewer_render_hz = 50.0
         self._last_viewer_sync = 0.0
         self._real_start_time = time.perf_counter()

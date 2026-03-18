@@ -1,4 +1,4 @@
-# Hardware Deploy
+# Deploy Robot in Simulation and on Hardware
 This repo is for deploying asynchronous sim and real robot code for Unitree G1 robot. 
 
 # Installation
