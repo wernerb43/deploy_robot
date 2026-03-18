@@ -47,10 +47,10 @@ class ControlNode(Node):
         self.init_policy()
 
         # ROS publishers
-        self.action_pub = self.create_publisher(Float32MultiArray, 'action', 10)
+        self.command_pub = self.create_publisher(Float32MultiArray, 'command', 10)
 
         # ROS subscribers
-        self.cmd_sub = self.create_subscription(Float32MultiArray, 'command', self.cmd_callback, 10)
+        self.cmd_sub = self.create_subscription(Float32MultiArray, 'joystick', self.cmd_callback, 10)
         self.imu_sensor_sub = self.create_subscription(Float32MultiArray, 'imu_data', self.imu_sensor_callback, 10)
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'joint_data', self.joint_sensor_callback, 10)
         self.time_sub = self.create_subscription(Float64, 'sim_time', self.time_callback, 10)
@@ -100,6 +100,10 @@ class ControlNode(Node):
         self.dof_vel_scale = self.config["dof_vel_scale"]
         self.action_scale = self.config["action_scale"]
         self.cmd_scale = np.array(self.config["cmd_scale"], dtype=np.float32)
+
+        # PD gains
+        self.Kp = np.array(self.config["kps"], dtype=np.float32)
+        self.Kd = np.array(self.config["kds"], dtype=np.float32)
 
         # control frequency
         self.ctrl_dt = self.config["control_dt"]
@@ -190,18 +194,19 @@ class ControlNode(Node):
 
         # get the current observation
         obs = self.build_observation()
-        
+
         # target joint positions (PD control)
         self.action = self.policy.inference(obs)
 
-        # scale the action
-        qpos_joints_des = self.action * self.action_scale + self.qpos_joints_default
+        # build the command: [qpos_des, qvel_des, tau_ff, kp, kd]
+        qpos_des = self.action * self.action_scale + self.qpos_joints_default
+        qvel_des = np.zeros(self.act_size, dtype=np.float32)
+        tau_ff = np.zeros(self.act_size, dtype=np.float32)
 
-        # publish the action
-        action_msg = Float32MultiArray()
-        action_msg.data = qpos_joints_des.tolist()
-
-        self.action_pub.publish(action_msg)
+        # publish the command
+        cmd_msg = Float32MultiArray()
+        cmd_msg.data = np.concatenate([qpos_des, qvel_des, tau_ff, self.Kp, self.Kd]).tolist()
+        self.command_pub.publish(cmd_msg)
 
 
 ############################################################################

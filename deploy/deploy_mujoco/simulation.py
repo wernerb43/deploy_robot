@@ -54,12 +54,15 @@ class SimulationNode(Node):
         self.time_pub = self.create_publisher(Float64, 'sim_time', 10)
 
         # ROS subscribers
-        self.action_sub = self.create_subscription(Float32MultiArray, 'action', self.action_callback, 10)
-        # self.state_machine_sub = self.create_subscription(Int32, 'state_machine', self.state_machine_callback, 10)
+        self.command_sub = self.create_subscription(Float32MultiArray, 'command', self.command_callback, 10)
 
-        # initial action and state
-        self.qpos_joints_des = None
-        self.state = 0
+        # initial command state
+        self.command_received = False
+        self.qpos_des = np.zeros(self.nu)
+        self.qvel_des = np.zeros(self.nu)
+        self.tau_ff = np.zeros(self.nu)
+        self.Kp = np.zeros(self.nu)
+        self.Kd = np.zeros(self.nu)
 
         # create a timer to run the simulation loop 
         sim_period = 0.0 # run as fast as possible, real-time sync is handled in the loop
@@ -90,10 +93,6 @@ class SimulationNode(Node):
     # load policy params
     def init_params(self):
 
-        # PD gains
-        self.Kp = np.array(self.config['kps'])
-        self.Kd = np.array(self.config['kds'])
-
         # set the default state
         self.default_base = np.array(self.config['default_base_pos'])
         self.default_joints = np.array(self.config['default_joint_pos'])
@@ -115,10 +114,8 @@ class SimulationNode(Node):
         self.nu = self.mj_model.nu
         self.sim_dt = self.mj_model.opt.timestep
 
-        # make sure the gains are the correct size
-        assert len(self.Kp) == self.nu, f"Kp must be of size {self.nu}, got {len(self.Kp)}."
-        assert len(self.Kd) == self.nu, f"Kd must be of size {self.nu}, got {len(self.Kd)}."
-        assert len(self.default_joints) == self.nu, (f"Default joint angles must be of size"
+        # make sure the default joints are the correct size
+        assert len(self.default_joints) == self.nu, (f"Default joint angles must be of size "
                                                      f"{self.nu}, got {len(self.default_joints)}.")
 
         # assign initial state
@@ -150,24 +147,29 @@ class SimulationNode(Node):
     # HELPERS 
     #################################################################
 
-    # get the current state machine state
-    def state_machine_callback(self, msg):
-        self.state = msg.data
+    # command callback: [qpos_des, qvel_des, tau_ff, kp, kd] (nu * 5)
+    def command_callback(self, msg):
+        data = np.array(msg.data)
+        
+        # unpack the command
+        self.command_received = True
+        self.qpos_des = data[0*self.nu : 1*self.nu]
+        self.qvel_des = data[1*self.nu : 2*self.nu]
+        self.tau_ff   = data[2*self.nu : 3*self.nu]
+        self.Kp       = data[3*self.nu : 4*self.nu]
+        self.Kd       = data[4*self.nu : 5*self.nu]
 
-    # get the current action command
-    def action_callback(self, msg):
-        # array of desired joint positions
-        self.qpos_joints_des = np.array(msg.data)
-
-    # compute torque given the action and current state
-    def compute_torque(self, qpos_joints_des):
+    # compute torque using PD control + feedforward
+    def compute_torque(self):
 
         # get current joint positions and velocities
         qpos_joints = self.mj_data.qpos[7:7+self.nu]
         qvel_joints = self.mj_data.qvel[6:6+self.nu]
 
-        # compute the torque using a PD controller
-        tau = self.Kp * (qpos_joints_des - qpos_joints) + self.Kd * (0 - qvel_joints)
+        # tau = kp * (qpos_des - qpos) + kd * (qvel_des - qvel) + tau_ff
+        tau = (self.Kp * (self.qpos_des - qpos_joints)
+             + self.Kd * (self.qvel_des - qvel_joints)
+             + self.tau_ff)
 
         return tau
 
@@ -197,9 +199,10 @@ class SimulationNode(Node):
 
     # step the simulation
     def step_simulation(self):
-        # compute the action torque
-        if self.qpos_joints_des is not None:
-            tau = self.compute_torque(self.qpos_joints_des)
+
+        # compute the torque to apply
+        if self.command_received == True:
+            tau = self.compute_torque()
             self.mj_data.ctrl[:] = tau
         else:
             self.mj_data.ctrl[:] = 0.0
