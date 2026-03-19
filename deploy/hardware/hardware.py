@@ -81,7 +81,7 @@ class Mode:
     AB = 1  # Parallel Control for A/B Joints
 
 # low-level control frequency 
-low_level_control_dt = 0.002  # [sec]
+low_level_control_dt = 0.001  # [sec]
 
 
 ########################################################################
@@ -109,6 +109,10 @@ class Custom:
         self.ddq = np.zeros(G1_NUM_MOTOR)      # joint accelerations
         self.tau_est = np.zeros(G1_NUM_MOTOR)  # estimated joint torques
 
+        # flag for which part of startup we are in 
+        self.stage = 0
+        self.wall_clock_start_ = None
+
         # other stuff from unitree's example
         self.time_ = 0.0
         self.counter_ = 0
@@ -133,7 +137,8 @@ class Custom:
     def load_params(self):
 
         # time to interpolate to initial
-        self.default_pos_duration = self.config['default_pos_duration'] # float
+        self.interp_default_pos_duration = self.config['interp_default_pos_duration']   # float
+        self.hold_default_pos_duration = self.config['hold_default_pos_duration']       # float
 
         # default joint positions
         self.default_joint_pos = self.config['default_joint_pos'] # list
@@ -143,7 +148,9 @@ class Custom:
         self.Kd = self.config['Kd']  # list
 
         # type checks
-        assert type(self.default_pos_duration) in [float], "default_pos_duration must be a float."
+        assert type(self.interp_default_pos_duration) in [float], "interp_default_pos_duration must be a float."
+        assert type(self.hold_default_pos_duration) in [float], "hold_default_pos_duration must be a float."
+        assert type(self.default_joint_pos) == list, "default_joint_pos must be a list."
         assert type(self.Kp) == list, "Kp must be a list."
         assert type(self.Kd) == list, "Kd must be a list."
 
@@ -152,7 +159,8 @@ class Custom:
         assert len(self.Kd) == G1_NUM_MOTOR, f"Expected {G1_NUM_MOTOR} Kd values, got {len(self.Kd)}."
 
         # value checks
-        assert self.default_pos_duration >= 2.0, "default_pos_duration must take at least 2 seconds for safe interpolation."
+        assert self.interp_default_pos_duration >= 3.0, "interp_default_pos_duration must take at least 3 seconds."
+        assert self.hold_default_pos_duration >= 3.0, "hold_default_pos_duration must take at least 3 seconds."
         assert len(self.default_joint_pos) == G1_NUM_MOTOR, (f"Expected {G1_NUM_MOTOR} default joint positions, "
                                                              f"got {len(self.default_joint_pos)}")
         for i in range(G1_NUM_MOTOR):
@@ -199,9 +207,8 @@ class Custom:
         
         # start the low-level control thread
         if self.update_mode_machine_ == True:
+            print("Low-level control thread started successfully.")
             self.lowCmdWriteThreadPtr.Start()
-
-        print("Low-level control thread started successfully.")
 
 
     # callback to receive low state messages
@@ -225,25 +232,22 @@ class Custom:
             self.ddq[i] = self.low_state.motor_state[i].ddq
             self.tau_est[i] = self.low_state.motor_state[i].tau_est
 
-        # print("Low state received. IMU RPY: {}".format(self.imu_rpy))
-        # print("Low state received. IMU Quaternion: {}".format(self.imu_quaternion))
-        # print("Low state received. IMU Gyroscope: {}".format(self.imu_gyroscope))
-        # print("Low state received. IMU Accelerometer: {}".format(self.imu_accelerometer))
-        # q_ = np.array(self.q)
-        # print with 3 decimal places
-        # print("Low state received. Joint positions: [{}]".format(", ".join(f"{v:.3f}" for v in q_)))
-
 
     # main control loop to send low-level commands
     def LowCmdWrite(self):
 
+        if self.wall_clock_start_ is None:
+            self.wall_clock_start_ = time.perf_counter()
         self.time_ += low_level_control_dt
+        self.wall_clock_time_ = time.perf_counter() - self.wall_clock_start_
 
         # [Stage 1]: interpolate to default joint positions
-        if self.time_ < self.default_pos_duration :
-            # print("Interpolating to default joint positions...")
+        if self.time_ < self.interp_default_pos_duration :
+            ratio = np.clip(self.time_ / self.interp_default_pos_duration, 0.0, 1.0)
+            if self.stage == 0:
+                print(f"[Stage 1]: Interpolating to default joint positions ({self.interp_default_pos_duration:.1f}s)...")
+                self.stage = 1
             for i in range(G1_NUM_MOTOR):
-                ratio = np.clip(self.time_ / self.default_pos_duration, 0.0, 1.0)
                 self.low_cmd.mode_pr = Mode.PR
                 self.low_cmd.mode_machine = self.mode_machine_
                 self.low_cmd.motor_cmd[i].mode =  1 # 1:Enable, 0:Disable
@@ -253,28 +257,42 @@ class Custom:
                 self.low_cmd.motor_cmd[i].kp = self.Kp[i]
                 self.low_cmd.motor_cmd[i].kd = self.Kd[i]
 
-        # [Stage 2]: regular control commands
-        else:
-            # print("Regular control...")
-            # max_P = np.pi * 10.0 / 180.0
-            # max_R = np.pi * 10.0 / 180.0
-            # t = self.time_ - self.default_pos_duration
-            # L_P_des = max_P * np.sin(2.0 * np.pi * t)
-            # L_R_des = max_R * np.sin(2.0 * np.pi * t)
-            # R_P_des = max_P * np.sin(2.0 * np.pi * t)
-            # R_R_des = -max_R * np.sin(2.0 * np.pi * t)
-            L_P_des = 0.0
-            L_R_des = 0.0
-            R_P_des = 0.0
-            R_R_des = 0.0
+        # [Stage 2]: hold default joint positions
+        elif self.time_ < self.interp_default_pos_duration + self.hold_default_pos_duration:
+            if self.stage == 1:
+                print(f"[Stage 2]: Holding default joint positions ({self.hold_default_pos_duration:.1f}s)...")
+                self.stage = 2
+            for i in range(G1_NUM_MOTOR):
+                self.low_cmd.mode_pr = Mode.PR
+                self.low_cmd.mode_machine = self.mode_machine_
+                self.low_cmd.motor_cmd[i].mode =  1 # 1:Enable, 0:Disable
+                self.low_cmd.motor_cmd[i].tau = 0. 
+                self.low_cmd.motor_cmd[i].q = self.default_joint_pos[i]
+                self.low_cmd.motor_cmd[i].dq = 0. 
+                self.low_cmd.motor_cmd[i].kp = self.Kp[i]
+                self.low_cmd.motor_cmd[i].kd = self.Kd[i]
 
-            self.low_cmd.mode_pr = Mode.PR
-            self.low_cmd.mode_machine = self.mode_machine_
-            self.low_cmd.motor_cmd[G1JointIndex.LeftAnklePitch].q = L_P_des
-            self.low_cmd.motor_cmd[G1JointIndex.LeftAnkleRoll].q = L_R_des
-            self.low_cmd.motor_cmd[G1JointIndex.RightAnklePitch].q = R_P_des
-            self.low_cmd.motor_cmd[G1JointIndex.RightAnkleRoll].q = R_R_des
- 
+        # [Stage 3]: regular control loop
+        else:
+            if self.stage == 2:
+                print("[Stage 3]: Running regular control loop...")
+                self.stage = 3
+            for i in range(G1_NUM_MOTOR):
+                self.low_cmd.mode_pr = Mode.PR
+                self.low_cmd.mode_machine = self.mode_machine_
+                self.low_cmd.motor_cmd[i].mode =  1 # 1:Enable, 0:Disable
+                self.low_cmd.motor_cmd[i].tau = 0. 
+                self.low_cmd.motor_cmd[i].q = self.default_joint_pos[i]
+                self.low_cmd.motor_cmd[i].dq = 0. 
+                self.low_cmd.motor_cmd[i].kp = self.Kp[i]
+                self.low_cmd.motor_cmd[i].kd = self.Kd[i]
+
+        # print time error every 0.1s
+        self.counter_ += 1
+        if self.counter_ % 100 == 0:
+            time_error = self.time_ - self.wall_clock_time_
+            print(f"Time error: {time_error:.5f}s (accumulated: {self.time_:.5f}s, wall: {self.wall_clock_time_:.5f}s)")
+
         # check sum commands for safety and then publish
         self.low_cmd.crc = self.crc.Crc(self.low_cmd)
         self.lowcmd_publisher_.Write(self.low_cmd)
@@ -309,11 +327,10 @@ def main(args=None):
     )
     args = parser.parse_args()
 
-    print("#" * 65)
-    print("# WARNING: Please ensure there are no obstacles around the robot.")
-    print("#" * 65)
+    print()
     while input("Press [Enter] to continue: ") != "":
         pass
+    print()
 
     # initialize the channel factory with the specified network interface
     ChannelFactoryInitialize(0, args.network)
