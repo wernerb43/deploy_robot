@@ -19,7 +19,7 @@ import yaml
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32, Float64, Float32MultiArray
+from std_msgs.msg import Float64, Float32MultiArray
 
 # directory imports
 import os
@@ -37,7 +37,7 @@ class SimulationNode(Node):
 
     def __init__(self, config_path: str):
 
-        super().__init__('sim_node')
+        super().__init__('simulation_node')
 
         # load config file
         self.config = self.load_config(config_path)
@@ -49,12 +49,12 @@ class SimulationNode(Node):
         self.init_simulation()
 
         # ROS publishers
-        self.imu_sensor_pub = self.create_publisher(Float32MultiArray, 'imu_data', 10)
-        self.joint_sensor_pub = self.create_publisher(Float32MultiArray, 'joint_data', 10)
-        self.time_pub = self.create_publisher(Float64, 'sim_time', 10)
+        self.imu_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/imu_state', 10)
+        self.joint_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/joint_state', 10)
+        self.simulation_time_pub = self.create_publisher(Float64, 'deploy_robot/simulation_time', 10)
 
         # ROS subscribers
-        self.command_sub = self.create_subscription(Float32MultiArray, 'command', self.command_callback, 10)
+        self.command_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/command', self.command_callback, 10)
 
         # initial command state
         self.command_received = False
@@ -69,10 +69,10 @@ class SimulationNode(Node):
         self.timer = self.create_timer(sim_period, self.step_simulation)
 
         # create timers for publishing
-        imu_sensor_period = self.sim_dt  # or whatever period you want
-        joint_sensor_period = self.sim_dt
-        self.imu_timer = self.create_timer(imu_sensor_period, self.publish_imu)             
-        self.joint_timer = self.create_timer(joint_sensor_period, self.publish_joint_state)
+        imu_state_period = self.sim_dt  
+        joint_state_period = self.sim_dt
+        self.imu_timer = self.create_timer(imu_state_period, self.publish_imu)             
+        self.joint_timer = self.create_timer(joint_state_period, self.publish_joint_state)
 
         print("Simulation node initialized.")
 
@@ -135,21 +135,27 @@ class SimulationNode(Node):
             show_left_ui=False,  # disable left tab (use 'Tab' for toggling on/off)
             show_right_ui=False, # disable right tab (use 'Tab + Shift' for toggling on/off)
         )
-        self.viewer_render_hz = 50.0
-        self._last_viewer_sync = 0.0
-        self._real_start_time = time.perf_counter()
-        self._next_step_deadline = self._real_start_time + self.sim_dt
 
-        # adjust viewer font
+        # viewer settings
         self._viewer_font_scale = getattr(
             mujoco.mjtFontScale,
             'mjFONTSCALE_250',
             getattr(mujoco.mjtFontScale, 'mjFONTSCALE_200', mujoco.mjtFontScale.mjFONTSCALE_150),
         )
+        self.viewer_render_hz = 50.0
+        self._last_viewer_sync = 0.0
+        self._real_start_time = time.perf_counter()
+        self._next_step_deadline = self._real_start_time + self.sim_dt
 
+        # camera settings
+        self.viewer.cam.azimuth   = 135    # degrees, horizontal rotation
+        self.viewer.cam.elevation = -10    # degrees, negative looks down
+        self.viewer.cam.distance  = 2.5    # meters from lookat point
+        self.viewer.cam.lookat[:] = list(self.default_base[0:3]) # (x, y, z) point to look at
+    
 
     #################################################################
-    # HELPERS 
+    # PUBLISHING AND CALLBACKS
     #################################################################
 
     # command callback: [qpos_des, qvel_des, tau_ff, kp, kd] (nu * 5)
@@ -164,6 +170,34 @@ class SimulationNode(Node):
         self.Kp       = data[3*self.nu : 4*self.nu]
         self.Kd       = data[4*self.nu : 5*self.nu]
 
+
+    # publish sensor data
+    def publish_imu(self):
+        # get the IMU data from the simulation
+        quat = self.mj_data.qpos[3:7]   # quaternion (w, x, y, z)
+        omega = self.mj_data.qvel[3:6]  # omega (wx, wy, wz)
+
+        imu_sensor_msg = Float32MultiArray()
+        imu_sensor_msg.data = np.concatenate([quat, omega]).tolist()
+
+        self.imu_state_pub.publish(imu_sensor_msg)
+
+
+    # publish joint state data
+    def publish_joint_state(self):
+        # get the joint data from the simulation
+        qpos_joints = self.mj_data.qpos[7:7+self.nu]
+        qvel_joints = self.mj_data.qvel[6:6+self.nu]
+
+        joint_state_msg = Float32MultiArray()
+        joint_state_msg.data = np.concatenate([qpos_joints, qvel_joints]).tolist()
+
+        self.joint_state_pub.publish(joint_state_msg)
+
+    #################################################################
+    # SIMULATION
+    #################################################################
+
     # compute torque using PD control + feedforward
     def compute_torque(self):
 
@@ -177,29 +211,6 @@ class SimulationNode(Node):
              + self.tau_ff)
 
         return tau
-
-    # publish sensor data
-    def publish_imu(self):
-        # get the IMU data from the simulation
-        quat = self.mj_data.qpos[3:7]   # quaternion (w, x, y, z)
-        omega = self.mj_data.qvel[3:6]  # omega (wx, wy, wz)
-
-        imu_sensor_msg = Float32MultiArray()
-        imu_sensor_msg.data = np.concatenate([quat, omega]).tolist()
-
-        self.imu_sensor_pub.publish(imu_sensor_msg)
-
-
-    # publish joint state data
-    def publish_joint_state(self):
-        # get the joint data from the simulation
-        qpos_joints = self.mj_data.qpos[7:7+self.nu]
-        qvel_joints = self.mj_data.qvel[6:6+self.nu]
-
-        joint_state_msg = Float32MultiArray()
-        joint_state_msg.data = np.concatenate([qpos_joints, qvel_joints]).tolist()
-
-        self.joint_sensor_pub.publish(joint_state_msg)
 
 
     # step the simulation
@@ -218,7 +229,7 @@ class SimulationNode(Node):
         # publish sim time
         time_msg = Float64()
         time_msg.data = self.mj_data.time
-        self.time_pub.publish(time_msg)
+        self.simulation_time_pub.publish(time_msg)
 
         # sync viewer at viewer_render_hz
         now = time.perf_counter()
@@ -246,6 +257,12 @@ class SimulationNode(Node):
         self._next_step_deadline += self.sim_dt
 
 
+    # shutdown the node and close the viewer
+    def destroy_node(self):
+        if self.viewer.is_running():
+            self.viewer.close()
+        super().destroy_node()
+
 
 ############################################################################
 # MAIN FUNCTION
@@ -272,18 +289,18 @@ def main(args=None):
     # create the simulation node
     sim_node = SimulationNode(args.config)
 
-    # execute the simulation
     try:
-        # spin the node
-        rclpy.spin(sim_node)
-    
+        while rclpy.ok() and sim_node.viewer.is_running():
+            rclpy.spin_once(sim_node, timeout_sec=0.1)
     except KeyboardInterrupt:
         pass
-
+    # ROS2 shutdown
     finally:
-        # close everything
         sim_node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+    print("Simulation shutdown complete.")
 
 
 if __name__ == "__main__":

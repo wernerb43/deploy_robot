@@ -14,7 +14,7 @@ import yaml
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32, Float64, Float32MultiArray
+from std_msgs.msg import Float64, Float32MultiArray
 
 # directory imports
 import sys
@@ -47,13 +47,13 @@ class ControlNode(Node):
         self.init_policy()
 
         # ROS publishers
-        self.command_pub = self.create_publisher(Float32MultiArray, 'command', 10)
+        self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/command', 10)
 
         # ROS subscribers
-        self.cmd_sub = self.create_subscription(Float32MultiArray, 'joystick', self.cmd_callback, 10)
-        self.imu_sensor_sub = self.create_subscription(Float32MultiArray, 'imu_data', self.imu_sensor_callback, 10)
-        self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'joint_data', self.joint_sensor_callback, 10)
-        self.time_sub = self.create_subscription(Float64, 'sim_time', self.time_callback, 10)
+        self.cmd_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick', self.cmd_callback, 10)
+        self.imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/imu_state', self.imu_sensor_callback, 10)
+        self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
+        self.sim_time_sub = self.create_subscription(Float64, 'deploy_robot/simulation_time', self.time_callback, 10)
 
         # control timer to run the policy at a fixed frequency
         self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)

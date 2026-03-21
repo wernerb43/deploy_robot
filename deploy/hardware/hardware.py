@@ -85,7 +85,7 @@ class Mode:
 low_level_control_dt = 0.001  # [sec]
 
 # ROS2 sensor publishing frequency
-ros_publish_dt = 0.01  # [sec]
+ros_sensor_publish_dt = 0.01  # [sec]
 
 
 ########################################################################
@@ -94,6 +94,7 @@ ros_publish_dt = 0.01  # [sec]
 
 class ControlNode(Node):
     def __init__(self, config_path: str):
+
         super().__init__("hardware_node")
 
         # import config
@@ -136,6 +137,9 @@ class ControlNode(Node):
         self.update_mode_machine_ = False
         self.crc = CRC()
 
+    #################################################################
+    # INITIALIZATION
+    #################################################################
 
     # load the config file
     def load_config(self, config_path: str):
@@ -220,12 +224,33 @@ class ControlNode(Node):
         # ROS2 subscriber for commands
         self.command_sub = self.create_subscription(Float32MultiArray, "command", self.command_callback, 10)
 
-        # 100Hz publish timer
-        self.pub_timer = self.create_timer(ros_publish_dt, self.publish_sensor_data)
+        # sensor publish timer
+        self.pub_timer = self.create_timer(ros_sensor_publish_dt, self.publish_sensor_data)
 
         print("ROS2 publishers and subscribers initialized successfully.")
 
 
+    # create a thread to run the low-level control loop
+    def Start(self):
+        # create a thread for low-level control loop, but do not start it yet
+        self.lowCmdWriteThreadPtr = RecurrentThread(
+            interval=low_level_control_dt, target=self.LowCmdWrite, name="control"
+        )
+
+        # wait until we receive the first low state message
+        while self.update_mode_machine_ == False:
+            time.sleep(1)
+        
+        # start the low-level control thread
+        if self.update_mode_machine_ == True:
+            self.lowCmdWriteThreadPtr.Start()
+            print("Low-level robot control thread started successfully.")
+
+
+    #################################################################
+    # PUBLISHING AND CALLBACKS
+    #################################################################
+    
     # publish sensor data to ROS2 topics
     def publish_sensor_data(self):
         # read sensor data under lock
@@ -263,6 +288,9 @@ class ControlNode(Node):
         self.hardware_time_pub.publish(time_msg)
         self.state_machine_pub.publish(state_machine_msg)
 
+    #################################################################
+    # HARDWARE
+    #################################################################
 
     # callback to receive command messages from ROS2
     def command_callback(self, msg: Float32MultiArray):
@@ -283,23 +311,6 @@ class ControlNode(Node):
             self.Kp_cmd[:] = data[2*nu : 3*nu]
             self.Kd_cmd[:] = data[3*nu : 4*nu]
             self.tau_ff_cmd[:] = data[4*nu : 5*nu]
-
-
-    # create a thread to run the low-level control loop
-    def Start(self):
-        # create a thread for low-level control loop, but do not start it yet
-        self.lowCmdWriteThreadPtr = RecurrentThread(
-            interval=low_level_control_dt, target=self.LowCmdWrite, name="control"
-        )
-
-        # wait until we receive the first low state message
-        while self.update_mode_machine_ == False:
-            time.sleep(1)
-        
-        # start the low-level control thread
-        if self.update_mode_machine_ == True:
-            self.lowCmdWriteThreadPtr.Start()
-            print("Low-level robot control thread started successfully.")
 
 
     # callback to receive low state messages
@@ -464,7 +475,7 @@ def main(args=None):
         except Exception:
             pass
     
-    print("Shutdown complete.")
+    print("Hardware shutdown complete.")
 
 
 if __name__ == "__main__":
