@@ -75,8 +75,8 @@ class SimulationNode(Node):
         self.joint_timer = self.create_timer(joint_state_period, self.publish_joint_state)
 
         print("Simulation node initialized.")
-        print("    Press [Shift + Tab] to toggle the right UI (command display)") 
-        print("    Press [Tab] to toggle the left UI (sim time display).")
+        print("    Press [Tab] to toggle the left UI.")
+        print("    Press [Shift + Tab] to toggle the right UI.") 
 
     #################################################################
     # INITIALIZATION

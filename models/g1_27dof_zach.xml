@@ -1,7 +1,7 @@
 <!-- Pulled from the unitree_ros repo on 10/18/2024 then modified.
 Position and velocity actuators added. -->
 <mujoco model="g1_27dof">
-  <compiler angle="radian" meshdir="../meshes" eulerseq="XYZ"/>
+  <compiler angle="radian" meshdir="./meshes" eulerseq="XYZ"/>
 
   <option cone="elliptic" impratio="100" integrator="implicitfast" timestep="0.001"/>
 

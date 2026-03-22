@@ -1,8 +1,7 @@
 policy_path: "g1_12dof.pt"
-xml_path: "g1_12dof.xml"
+xml_path: "g1_12dof_gym.xml"
 
 # Total simulation time
-simulation_dt: 0.002
 control_dt: 0.02
 
 kps: [100, 100, 100, 150, 40, 40, 100, 100, 100, 150, 40, 40]
