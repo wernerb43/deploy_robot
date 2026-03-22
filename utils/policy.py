@@ -168,3 +168,32 @@ class Policy:
             return policy_inference_torch(self.policy, input)
         elif self._policy_type == "onnx":
             return policy_inference_onnx(self._onnx_session, input)
+
+
+############################################################################
+# EXAMPLE USAGE
+############################################################################
+
+if __name__ == "__main__":
+    import os
+    ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
+    policy_path = ROOT_DIR + "/policy/2026-03-19_19-11-15.onnx"
+
+    # load the policy
+    policy = Policy(policy_path)
+    print(f"Policy loaded from [{policy_path}]")
+    print(f"    Type: {policy._policy_type}")
+    print(f"    Input size: {policy.input_size}")
+    print(f"    Output size: {policy.output_size}")
+
+    # print metadata if available
+    if hasattr(policy, 'metadata'):
+        print(f"    Num joints: {policy.metadata['num_joints']}")
+        print(f"    Joint names: {policy.metadata['joint_names']}")
+        print(f"    Observations: {policy.metadata['observation_names']}")
+
+    # test inference with a zero input
+    obs = np.zeros(policy.input_size, dtype=np.float32)
+    action = policy.inference(obs)
+    print(f"    Test action shape: {action.shape}")
+    print(f"    Test action: {action}")
