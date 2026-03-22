@@ -44,8 +44,8 @@ class JoystickNode(Node):
         self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/joystick', 10)
 
         # create timer to publish commands at a fixed rate
-        command_freq = 100.0
-        self.command_timer = self.create_timer(1.0 / command_freq, self.publish_command)
+        joystick_dt = 0.02
+        self.command_timer = self.create_timer(joystick_dt, self.publish_command)
 
         print("Command node initialized.")
 
@@ -135,20 +135,21 @@ def main():
     rclpy.init()
 
     # create joystick node
-    cmd_node = JoystickNode()
+    joystick_node = JoystickNode()
 
-    # execute the commands
+    # run normally
     try:
-        # spin the node
-        rclpy.spin(cmd_node)
-
+        while rclpy.ok():
+            rclpy.spin_once(joystick_node, timeout_sec=0.1)
     except KeyboardInterrupt:
         pass
-
+    # ROS2 shutdown
     finally:
-        # close everything
-        cmd_node.destroy_node()
-        rclpy.shutdown()
+        joystick_node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+    print("Joystick shutdown complete.")
 
 
 if __name__ == "__main__":
