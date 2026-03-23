@@ -98,14 +98,23 @@ def policy_inference_torch(policy, input):
     return action
 
 # inference with an onnx policy
-def policy_inference_onnx(session, input):
+def policy_inference_onnx(session, input, **extra_inputs):
 
-    # get input name
+    # build input feed starting with the primary observation
     input_name = session.get_inputs()[0].name
+    input_feed = {input_name: input.reshape(1, -1).astype(np.float32)}
+
+    # fill in any additional required inputs (e.g., time_step)
+    for inp in session.get_inputs()[1:]:
+        if inp.name in extra_inputs:
+            val = np.array(extra_inputs[inp.name], dtype=np.float32).reshape(1, -1)
+        else:
+            shape = [max(d, 1) for d in inp.shape]
+            val = np.zeros(shape, dtype=np.float32)
+        input_feed[inp.name] = val
 
     # forward pass
-    input_array = input.reshape(1, -1).astype(np.float32)
-    action = session.run(None, {input_name: input_array})[0].squeeze()
+    action = session.run(None, input_feed)[0].squeeze()
 
     return action
 
@@ -154,17 +163,22 @@ class Policy:
         # I/O names and sizes
         self.input_size = None
         self.output_size = None
+        self.inputs = []
+        self.outputs = []
         if self._policy_type == "torch":
             self.input_size, self.output_size = get_policy_io_size_torch(self.policy)
         elif self._policy_type == "onnx":
             self.input_size, self.output_size = get_policy_io_size_onnx(self.policy)
+            self.inputs = [{"name": inp.name, "shape": inp.shape} for inp in self._onnx_session.get_inputs()]
+            self.outputs = [{"name": out.name, "shape": out.shape} for out in self._onnx_session.get_outputs()]
+            self.input_sizes = [inp.shape[-1] for inp in self._onnx_session.get_inputs()]
 
     # inference the policy given an input
-    def inference(self, input):
+    def inference(self, input, **extra_inputs):
         if self._policy_type == "torch":
             return policy_inference_torch(self.policy, input)
         elif self._policy_type == "onnx":
-            return policy_inference_onnx(self._onnx_session, input)
+            return policy_inference_onnx(self._onnx_session, input, **extra_inputs)
 
 
 ############################################################################
@@ -177,8 +191,9 @@ def main(args=None):
     ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 
     # specify the policy name
-    # policy_name = "g1_29dof_srb_jump_up.onnx"
-    policy_name = "g1_29dof_mjlab.onnx"
+    # policy_name = "g1_12dof_gym.pt"
+    policy_name = "g1_29dof_mjlab_vel.onnx"
+    policy_name = "g1_29dof_mjlab_imitation.onnx"
 
     # load the policy
     policy_path = ROOT_DIR + "/policy/" + policy_name
@@ -187,6 +202,8 @@ def main(args=None):
     print(f"    Type: {policy._policy_type}")
     print(f"    Input size: {policy.input_size}")
     print(f"    Output size: {policy.output_size}")
+    print(f"    Inputs: {policy.inputs}")
+    print(f"    Outputs: {policy.outputs}")
 
     # print metadata if available
     if hasattr(policy, 'metadata'):

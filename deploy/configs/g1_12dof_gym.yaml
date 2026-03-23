@@ -1,4 +1,4 @@
-policy_path: "g1_12dof.pt"
+policy_path: "g1_12dof_gym.pt"
 xml_path: "g1_12dof_gym.xml"
 
 # Total simulation time
