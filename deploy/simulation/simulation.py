@@ -49,7 +49,8 @@ class SimulationNode(Node):
         self.init_simulation()
 
         # ROS publishers
-        self.imu_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/imu_state', 10)
+        self.pelvis_imu_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/pelvis_imu_state', 10)
+        self.torso_imu_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/torso_imu_state', 10)
         self.joint_state_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/joint_state', 10)
         self.simulation_time_pub = self.create_publisher(Float64, 'deploy_robot/simulation_time', 10)
 
@@ -71,7 +72,8 @@ class SimulationNode(Node):
         # create timers for publishing
         imu_state_period = self.sim_dt  
         joint_state_period = self.sim_dt
-        self.imu_timer = self.create_timer(imu_state_period, self.publish_imu)             
+        self.pelvis_imu_timer = self.create_timer(imu_state_period, self.publish_pelvis_imu)
+        self.torso_imu_timer = self.create_timer(imu_state_period, self.publish_torso_imu)
         self.joint_timer = self.create_timer(joint_state_period, self.publish_joint_state)
 
         print("Simulation node initialized.")
@@ -174,16 +176,25 @@ class SimulationNode(Node):
         self.Kd       = data[4*self.nu : 5*self.nu]
 
 
-    # publish sensor data
-    def publish_imu(self):
-        # get the IMU data from the simulation
-        quat = self.mj_data.qpos[3:7]   # quaternion (w, x, y, z)
-        omega = self.mj_data.qvel[3:6]  # omega (wx, wy, wz)
+    # publish pelvis IMU: [quat(4), gyro(3), acc(3)]
+    def publish_pelvis_imu(self):
+        pelvis_quat = self.mj_data.sensor('pelvis_imu_quat_sensor').data.copy()
+        pelvis_gyro = self.mj_data.sensor('pelvis_imu_gyro_sensor').data.copy()
+        pelvis_acc  = self.mj_data.sensor('pelvis_imu_acc_sensor').data.copy()
 
-        imu_sensor_msg = Float32MultiArray()
-        imu_sensor_msg.data = np.concatenate([quat, omega]).tolist()
+        pelvis_msg = Float32MultiArray()
+        pelvis_msg.data = np.concatenate([pelvis_quat, pelvis_gyro, pelvis_acc]).tolist()
+        self.pelvis_imu_state_pub.publish(pelvis_msg)
 
-        self.imu_state_pub.publish(imu_sensor_msg)
+    # publish torso IMU: [quat(4), gyro(3), acc(3)]
+    def publish_torso_imu(self):
+        torso_quat = self.mj_data.sensor('torso_imu_quat_sensor').data.copy()
+        torso_gyro = self.mj_data.sensor('torso_imu_gyro_sensor').data.copy()
+        torso_acc  = self.mj_data.sensor('torso_imu_acc_sensor').data.copy()
+
+        torso_msg = Float32MultiArray()
+        torso_msg.data = np.concatenate([torso_quat, torso_gyro, torso_acc]).tolist()
+        self.torso_imu_state_pub.publish(torso_msg)
 
 
     # publish joint state data

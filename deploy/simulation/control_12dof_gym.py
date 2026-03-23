@@ -51,7 +51,7 @@ class ControlNode(Node):
 
         # ROS subscribers
         self.cmd_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick', self.cmd_callback, 10)
-        self.imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/imu_state', self.imu_sensor_callback, 10)
+        self.pelvis_imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_sensor_callback, 10)
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
         self.sim_time_sub = self.create_subscription(Float64, 'deploy_robot/simulation_time', self.time_callback, 10)
 
@@ -143,11 +143,12 @@ class ControlNode(Node):
         # update the command with the scaling
         self.cmd = np.array([vx_cmd, vy_cmd, omega_cmd], dtype=np.float32)
 
-    # IMU data: [quat(4), omega(3)]
-    def imu_sensor_callback(self, msg):
+    # pelvis IMU data: [quat(4), gyro(3), acc(3)]
+    def pelvis_imu_sensor_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
         self.quat = data[:4]
         self.omega = data[4:7]
+        self.acc = data[7:10]
 
     # joint data: [qpos(n), qvel(n)]
     def joint_sensor_callback(self, msg):
