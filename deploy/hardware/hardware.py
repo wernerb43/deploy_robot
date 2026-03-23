@@ -2,6 +2,8 @@
 #
 # Deployment code for Unitree G1 robot. 
 #
+# Common G1 "hg" topics: https://support.unitree.com/home/en/G1_developer/dds_services_interface
+# 
 ##
 
 # standard imports
@@ -212,6 +214,8 @@ class ControlNode(Node):
         # create subscriber #
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_)
         self.lowstate_subscriber.Init(self.LowStateHandler, 10)
+
+        # TODO: consider also querying the second IMU via "rt/secondary_imu", "IMU_State_"
 
         print("Unitree SDK publishers and subscribers initialized successfully.")
 

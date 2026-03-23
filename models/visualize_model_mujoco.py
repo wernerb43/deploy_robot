@@ -24,9 +24,7 @@ parser = argparse.ArgumentParser(
     description="Visualize a MuJoCo model."
 )
 parser.add_argument(
-     "--model", 
-     type=str, 
-     required=True,
+     "model", 
      help="Name of the XML model file to load (must be in the 'models' directory)."
 )
 args = parser.parse_args()
