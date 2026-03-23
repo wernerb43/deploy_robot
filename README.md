@@ -8,6 +8,15 @@ A brief overview of the repo structure is as follows:
 - `policy`: contains the policies to use for controlling the robot.
 - `utils`: contains utility code.
 
+Download a motion from WandB:
+```bash
+python motions/get_wandb_motion.py wandb-registry-Motions/walk1_subject1:latest
+```
+Download a policy from WandB:
+```bash
+python utils/get_wandb_policy.py sesteban-california-institute-of-technology-caltech/mjlab/bysdsnbu
+```
+
 ---
 
 # Installation

@@ -15,41 +15,7 @@ import mujoco.viewer
 
 # directory imports
 import os
-import xml.etree.ElementTree as ET
 ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
-
-
-# Isaac/ONNX joint order (same as joint_pos in the NPZ)
-ISAAC_JOINT_NAMES = [
-    'left_hip_pitch_joint', 'right_hip_pitch_joint', 'waist_yaw_joint', 'left_hip_roll_joint',
-    'right_hip_roll_joint', 'waist_roll_joint', 'left_hip_yaw_joint', 'right_hip_yaw_joint',
-    'waist_pitch_joint', 'left_knee_joint', 'right_knee_joint', 'left_shoulder_pitch_joint',
-    'right_shoulder_pitch_joint', 'left_ankle_pitch_joint', 'right_ankle_pitch_joint',
-    'left_shoulder_roll_joint', 'right_shoulder_roll_joint', 'left_ankle_roll_joint',
-    'right_ankle_roll_joint', 'left_shoulder_yaw_joint', 'right_shoulder_yaw_joint',
-    'left_elbow_joint', 'right_elbow_joint', 'left_wrist_roll_joint', 'right_wrist_roll_joint',
-    'left_wrist_pitch_joint', 'right_wrist_pitch_joint', 'left_wrist_yaw_joint', 'right_wrist_yaw_joint'
-]
-
-
-def get_isaac_to_mujoco_indices(xml_path):
-    """
-    Parse MuJoCo XML joint order and return reorder indices
-    so that isaac_arr[indices] gives MuJoCo-ordered array.
-    """
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
-    xml_joint_names = []
-    for joint in root.iter("joint"):
-        name = joint.attrib.get("name", None)
-        if name is not None:
-            xml_joint_names.append(name)
-    xml_joint_names.pop(0)  # remove floating base joint
-
-    indices = []
-    for name in xml_joint_names:
-        indices.append(ISAAC_JOINT_NAMES.index(name))
-    return indices
 
 
 #####################################################################
@@ -101,15 +67,29 @@ if __name__ == "__main__":
     times = np.arange(n_frames) / fps
 
     # load the G1 mujoco model
-    xml_path = ROOT_DIR + "/models/g1_29dof_rev_1_0.xml"
+    xml_path = ROOT_DIR + "/models/g1_29dof_mjlab.xml"
     mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_data = mujoco.MjData(mj_model)
 
-    # build isaac -> mujoco joint reorder indices
-    reorder = get_isaac_to_mujoco_indices(xml_path)
-
     # launch the viewer
-    viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
+    viewer = mujoco.viewer.launch_passive(
+        mj_model, mj_data,
+        show_left_ui=False,
+        show_right_ui=False,
+    )
+
+    # viewer settings
+    viewer_font_scale = getattr(
+        mujoco.mjtFontScale,
+        'mjFONTSCALE_250',
+        getattr(mujoco.mjtFontScale, 'mjFONTSCALE_200', mujoco.mjtFontScale.mjFONTSCALE_150),
+    )
+
+    # camera settings
+    viewer.cam.azimuth = 135
+    viewer.cam.elevation = -20
+    viewer.cam.distance = 3.0
+    viewer.cam.lookat[:] = body_pos_w[0, 0, :]
 
     # run the visualization
     try:
@@ -119,17 +99,25 @@ if __name__ == "__main__":
             if viewer.is_running() == False:
                 break
 
-            i = np.searchsorted(times, time.time() - t0)
-            i = min(i, len(times) - 1)  # Clamp to valid range
+            elapsed = time.time() - t0
+            i = np.searchsorted(times, elapsed)
+            i = min(i, len(times) - 1)
 
-            print(f"Time: {time.time() - t0:.2f}, Index: {i}\r", end="")
+            # display playback time and speed
+            playback_speed = elapsed / times[i] if times[i] > 0 else 0.0
+            viewer.set_texts((
+                viewer_font_scale,
+                mujoco.mjtGridPos.mjGRID_TOPLEFT,
+                f"Motion time: {times[i]:.2f}s\nReal time:   {elapsed:.2f}s\nSpeed:       {playback_speed:.2f}x",
+                "",
+            ))
 
             # base pose from motion (convert quat from xyzw to MuJoCo wxyz)
             base_pos = body_pos_w[i, 0, :]
             base_quat = body_quat_w[i, 0, :]  # already wxyz
 
-            mj_data.qpos[:] = np.concatenate([base_pos, base_quat, qpos[i, reorder]])
-            mj_data.qvel[:] = np.concatenate([body_lin_vel_w[i, 0, :], body_ang_vel_w[i, 0, :], qvel[i, reorder]])
+            mj_data.qpos[:] = np.concatenate([base_pos, base_quat, qpos[i]])
+            mj_data.qvel[:] = np.concatenate([body_lin_vel_w[i, 0, :], body_ang_vel_w[i, 0, :], qvel[i]])
 
             mujoco.mj_forward(mj_model, mj_data)
             viewer.sync()
@@ -148,8 +136,8 @@ if __name__ == "__main__":
     np.savez(
         save_path,
         fps=fps,
-        joint_pos=qpos[:, reorder],
-        joint_vel=qvel[:, reorder],
+        joint_pos=qpos,
+        joint_vel=qvel,
         body_pos_w=body_pos_w,
         body_quat_w=body_quat_w,
         body_lin_vel_w=body_lin_vel_w,
