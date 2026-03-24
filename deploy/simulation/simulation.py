@@ -126,6 +126,14 @@ class SimulationNode(Node):
         self.mj_data.qpos[:7] = self.default_base
         self.mj_data.qpos[7:7+self.nu] = self.default_joints
 
+        # build list of joint sensor names (matching actuator order)
+        self.joint_pos_sensor_names = []
+        self.joint_vel_sensor_names = []
+        for i in range(self.nu):
+            joint_name = mujoco.mj_id2name(self.mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, i)
+            self.joint_pos_sensor_names.append(f"{joint_name}_pos_sensor")
+            self.joint_vel_sensor_names.append(f"{joint_name}_vel_sensor")
+
         print(f"Loaded Mujoco model from [{xml_path}].")
         print(f"    Sim dt: {self.sim_dt} seconds.")
         print(f"    nq: {self.nq}")
@@ -197,11 +205,10 @@ class SimulationNode(Node):
         self.torso_imu_state_pub.publish(torso_msg)
 
 
-    # publish joint state data
+    # publish joint state data from sensors
     def publish_joint_state(self):
-        # get the joint data from the simulation
-        qpos_joints = self.mj_data.qpos[7:7+self.nu]
-        qvel_joints = self.mj_data.qvel[6:6+self.nu]
+        qpos_joints = np.array([self.mj_data.sensor(name).data[0] for name in self.joint_pos_sensor_names])
+        qvel_joints = np.array([self.mj_data.sensor(name).data[0] for name in self.joint_vel_sensor_names])
 
         joint_state_msg = Float32MultiArray()
         joint_state_msg.data = np.concatenate([qpos_joints, qvel_joints]).tolist()

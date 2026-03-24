@@ -73,6 +73,7 @@ class ControlNode(Node):
 
         print("Control node initialized.")
 
+
     #################################################################
     # INITIALIZATION
     #################################################################
@@ -148,7 +149,6 @@ class ControlNode(Node):
         data = np.array(msg.data, dtype=np.float32)
         self.quat = data[:4]
         self.omega = data[4:7]
-        self.acc = data[7:10]
 
     # joint data: [qpos(n), qvel(n)]
     def joint_sensor_callback(self, msg):
