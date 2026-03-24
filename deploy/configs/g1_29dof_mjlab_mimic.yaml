@@ -1,4 +1,4 @@
-policy_path: "g1_29dof_mjlab_mimic.onnx"
+policy_path: "g1_29dof_mjlab_mimic2.onnx"
 xml_path: "g1_29dof_mjlab.xml"
 motion_path: "walk1_subject1.npz"
 

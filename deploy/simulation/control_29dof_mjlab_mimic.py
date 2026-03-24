@@ -29,7 +29,6 @@ from utils.policy import Policy
 from utils.math_utils import (
     quat_conjugate,
     quat_multiply,
-    quat_to_rotation_matrix,
     quat_to_rot6d,
 )
 
@@ -59,7 +58,6 @@ class ControlNode(Node):
         # ROS subscribers
         self.pelvis_imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_sensor_callback, 10)
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
-        self.base_state_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/base_state', self.base_state_callback, 10)
         self.sim_time_sub = self.create_subscription(Float64, 'deploy_robot/simulation_time', self.time_callback, 10)
 
         # control timer to run the policy at a fixed frequency
@@ -70,8 +68,6 @@ class ControlNode(Node):
         self.pelvis_omega = np.zeros(3, dtype=np.float32)
         self.qpos_joints = np.array(self.qpos_joints_default.copy())
         self.qvel_joints = np.zeros_like(self.qpos_joints_default)
-        self.base_pos = np.array(self.config['default_base_pos'][:3], dtype=np.float32)
-        self.base_lin_vel_w = np.zeros(3, dtype=np.float32)
         self.sim_time = 0.0
 
         # initialize the action
@@ -134,7 +130,6 @@ class ControlNode(Node):
         self.motion_fps = float(motion['fps'])
         self.motion_joint_pos = motion['joint_pos'].astype(np.float32)
         self.motion_joint_vel = motion['joint_vel'].astype(np.float32)
-        self.motion_body_pos_w = motion['body_pos_w'].astype(np.float32)
         self.motion_body_quat_w = motion['body_quat_w'].astype(np.float32)
         self.motion_num_frames = self.motion_joint_pos.shape[0]
 
@@ -169,12 +164,6 @@ class ControlNode(Node):
         self.qpos_joints = data[:n]
         self.qvel_joints = data[n:2*n]
 
-    # base state: [pos(3), quat(4), lin_vel(3), ang_vel(3)] in world frame
-    def base_state_callback(self, msg):
-        data = np.array(msg.data, dtype=np.float32)
-        self.base_pos = data[0:3]
-        self.base_lin_vel_w = data[7:10]
-
     # sim time
     def time_callback(self, msg):
         self.sim_time = msg.data
@@ -185,8 +174,7 @@ class ControlNode(Node):
     #################################################################
 
     # build the observation vector for the policy
-    # ['command', 'motion_anchor_pos_b', 'motion_anchor_ori_b',
-    #  'base_lin_vel', 'base_ang_vel', 'joint_pos', 'joint_vel', 'actions']
+    # ['command', 'motion_anchor_ori_b', 'base_ang_vel', 'joint_pos', 'joint_vel', 'actions']
     def build_observation(self):
 
         # motion frame from sim time
@@ -198,18 +186,10 @@ class ControlNode(Node):
             self.motion_joint_vel[frame],
         ])
 
-        # --- motion_anchor_pos_b (3) : desired anchor position in base frame ---
-        motion_anchor_pos_w = self.motion_body_pos_w[frame, self.anchor_body_idx]
-        motion_anchor_quat_w = self.motion_body_quat_w[frame, self.anchor_body_idx]
-        R_pelvis = quat_to_rotation_matrix(self.pelvis_quat)
-        anchor_pos_b = R_pelvis.T @ (motion_anchor_pos_w - self.base_pos)
-
         # --- motion_anchor_ori_b (6) : desired anchor orientation in base frame (6D rotation) ---
+        motion_anchor_quat_w = self.motion_body_quat_w[frame, self.anchor_body_idx]
         rel_quat = quat_multiply(quat_conjugate(self.pelvis_quat), motion_anchor_quat_w)
         anchor_ori_b = quat_to_rot6d(rel_quat)
-
-        # --- base_lin_vel (3) : linear velocity in pelvis frame ---
-        base_lin_vel_b = R_pelvis.T @ self.base_lin_vel_w
 
         # --- base_ang_vel (3) : angular velocity in pelvis frame (from pelvis IMU gyro) ---
         base_ang_vel_b = self.pelvis_omega
@@ -221,10 +201,10 @@ class ControlNode(Node):
         dqj = self.qvel_joints
 
         # --- actions (29) : previous action ---
-        # concatenate: 58 + 3 + 6 + 3 + 3 + 29 + 29 + 29 = 160
+        # concatenate: 58 + 6 + 3 + 29 + 29 + 29 = 154
         obs = np.concatenate([
-            command, anchor_pos_b, anchor_ori_b,
-            base_lin_vel_b, base_ang_vel_b,
+            command, anchor_ori_b,
+            base_ang_vel_b,
             qj, dqj, self.action,
         ]).astype(np.float32)
 
