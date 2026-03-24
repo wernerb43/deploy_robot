@@ -69,6 +69,9 @@ class ControlNode(Node):
         self.qvel_joints = np.zeros_like(self.qpos_joints_default)
         self.sim_time = 0.0
 
+        # motion frame counter (advances 1 frame per control step, matching training)
+        self.motion_frame = 0
+
         # initialize the action
         self.action = np.zeros(self.act_size)
 
@@ -175,8 +178,8 @@ class ControlNode(Node):
     # ['command', 'motion_anchor_ori_b', 'base_ang_vel', 'joint_pos', 'joint_vel', 'actions']
     def build_observation(self):
 
-        # motion frame from sim time
-        frame = int(self.sim_time * self.motion_fps) % self.motion_num_frames
+        # motion frame (advanced 1 per control step in control_callback)
+        frame = self.motion_frame % self.motion_num_frames
 
         # --- command (58) : motion reference joint_pos + joint_vel ---
         command = np.concatenate([
@@ -221,6 +224,9 @@ class ControlNode(Node):
 
         # target joint positions (PD control)
         self.action = self.policy.inference(obs, time_step=frame)
+
+        # advance motion by 1 frame per control step (matches training)
+        self.motion_frame += 1
 
         # build the command: [qpos_des, qvel_des, tau_ff, kp, kd]
         qpos_des = self.action * self.action_scale + self.qpos_joints_default
