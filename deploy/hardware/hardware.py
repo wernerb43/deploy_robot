@@ -84,11 +84,15 @@ class Mode:
     PR = 0  # Series Control for Pitch/Roll Joints
     AB = 1  # Parallel Control for A/B Joints
 
+
 # low-level control frequency 
-low_level_control_dt = 0.002  # [sec]
+LOW_LEVEL_CONTROL_DT = 0.002  # [sec]
 
 # ROS2 sensor publishing frequency
-ros_sensor_publish_dt = 0.01  # [sec]
+ROS_SENSOR_PUBLISH_DT = 0.01  # [sec]
+
+# safety: max allowable pelvis roll/pitch before forcing damp (when you fall)
+SAFETY_MAX_TILT = np.radians(30.0)  # [rad]
 
 
 ########################################################################
@@ -140,6 +144,9 @@ class ControlNode(Node):
         self.fsm_start_time = 0.0
         self.fsm_start_q = np.zeros(G1_NUM_MOTOR)
         self.fsm_time = 0.0
+
+        # safety flags
+        self.safety_triggered = False
 
         # other stuff from unitree's example
         self.time_ = 0.0
@@ -238,7 +245,7 @@ class ControlNode(Node):
         self.fsm_sub = self.create_subscription(String, "deploy_robot/fsm", self.fsm_callback, 10)
 
         # sensor publish timer
-        self.pub_timer = self.create_timer(ros_sensor_publish_dt, self.publish_sensor_data)
+        self.pub_timer = self.create_timer(ROS_SENSOR_PUBLISH_DT, self.publish_sensor_data)
 
         print("ROS2 publishers and subscribers initialized successfully.")
 
@@ -247,7 +254,7 @@ class ControlNode(Node):
     def Start(self):
         # create a thread for low-level control loop, but do not start it yet
         self.lowCmdWriteThreadPtr = RecurrentThread(
-            interval=low_level_control_dt, target=self.LowCmdWrite, name="control"
+            interval=LOW_LEVEL_CONTROL_DT, target=self.LowCmdWrite, name="control"
         )
 
         # wait until we receive the first low state message
@@ -378,7 +385,7 @@ class ControlNode(Node):
     def LowCmdWrite(self):
         
         # update hardware time
-        self.time_ += low_level_control_dt
+        self.time_ += LOW_LEVEL_CONTROL_DT
 
         # read FSM state under lock
         with self.fsm_lock:
@@ -394,6 +401,21 @@ class ControlNode(Node):
 
         # update fsm time
         self.fsm_time = self.time_ - self.fsm_start_time
+
+        # safety: force damp if pelvis tilts beyond specified threshold
+        if not self.safety_triggered:
+            with self.sensor_lock:
+                rpy = self.pelvis_imu_rpy
+            if rpy is not None:
+                roll, pitch = abs(rpy[0]), abs(rpy[1])
+                if roll > SAFETY_MAX_TILT or pitch > SAFETY_MAX_TILT:
+                    print()
+                    print("*" * 70)
+                    print(f"SAFETY: roll={np.degrees(roll):.2f} pitch={np.degrees(pitch):.2f} -> FORCING DAMP. PLEASE RESTART!")
+                    print("*" * 70)
+                    self.safety_triggered = True
+        if self.safety_triggered:
+            fsm_state = "damp"
 
         # [init]: zero out all commands
         if fsm_state == "init":
