@@ -10,7 +10,7 @@ import pygame
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, String
 
 # directory imports
 import sys
@@ -20,6 +20,7 @@ sys.path.append(ROOT_DIR)
 
 # custom imports
 from utils.joystick_utils import JoystickState, pygame_to_joystick_state
+from utils.finite_state_machine import FiniteStateMachine
 
 
 ############################################################################
@@ -40,8 +41,12 @@ class JoystickNode(Node):
         self.joystick_state = JoystickState()
         self.init_joystick()
 
+        # finite state machine
+        self.fsm = FiniteStateMachine()
+
         # ROS2 publishers
         self.command_pub = self.create_publisher(Float32MultiArray, 'deploy_robot/joystick', 10)
+        self.fsm_pub = self.create_publisher(String, 'deploy_robot/fsm', 10)
 
         # create timer to publish commands at a fixed rate
         joystick_dt = 0.02
@@ -107,6 +112,12 @@ class JoystickNode(Node):
 
         # publish the command
         else:
+            # step the finite state machine
+            fsm_state = self.fsm.step(self.joystick_state)
+            fsm_msg = String()
+            fsm_msg.data = fsm_state
+            self.fsm_pub.publish(fsm_msg)
+
             # convert the joystick state to a command message
             is_connected = 1.0
             vx_cmd = self.joystick_state.LS_Y
