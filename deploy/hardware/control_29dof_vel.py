@@ -55,7 +55,7 @@ class ControlNode(Node):
         self.cmd_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joystick', self.cmd_callback, 10)
         self.pelvis_imu_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/pelvis_imu_state', self.pelvis_imu_sensor_callback, 10)
         self.joint_sensor_sub = self.create_subscription(Float32MultiArray, 'deploy_robot/joint_state', self.joint_sensor_callback, 10)
-        self.sim_time_sub = self.create_subscription(Float64, 'deploy_robot/simulation_time', self.time_callback, 10)
+        self.fsm_time_sub = self.create_subscription(Float64, 'deploy_robot/fsm_time', self.time_callback, 10)
 
         # control timer to run the policy at a fixed frequency
         self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
@@ -65,7 +65,7 @@ class ControlNode(Node):
         self.omega = np.zeros(3)
         self.qpos_joints = np.array(self.qpos_joints_default.copy())
         self.qvel_joints = np.zeros_like(self.qpos_joints_default)
-        self.sim_time = 0.0
+        self.fsm_time = 0.0
 
         # initialize command
         self.cmd = np.zeros(3)
@@ -147,13 +147,13 @@ class ControlNode(Node):
         # update the command with the scaling
         self.cmd = np.array([vx_cmd, vy_cmd, omega_cmd], dtype=np.float32)
 
-    # pelvis IMU data: [quat(4), gyro(3), acc(3)]
+    # pelvis IMU data: [rpy(3), quat(4), gyro(3), accel(3)]
     def pelvis_imu_sensor_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
-        self.quat = data[:4]
-        self.omega = data[4:7]
+        self.quat = data[3:7]
+        self.omega = data[7:10]
 
-    # joint data: [qpos(n), qvel(n)]
+    # joint data: [q(29), dq(29), ddq(29), tau_est(29)] — we only need q and dq
     def joint_sensor_callback(self, msg):
         data = np.array(msg.data, dtype=np.float32)
         n = len(self.qpos_joints_default)
@@ -162,7 +162,7 @@ class ControlNode(Node):
 
     # sim time
     def time_callback(self, msg):
-        self.sim_time = msg.data
+        self.fsm_time = msg.data
 
     # build the observation vector for the policy
     def build_observation(self):
@@ -175,7 +175,7 @@ class ControlNode(Node):
         dqj = self.qvel_joints
         
         # gait phase clock
-        phase = (self.sim_time % self.gait_period) / self.gait_period
+        phase = (self.fsm_time % self.gait_period) / self.gait_period
         phase_right = (phase + self.gait_offset) % 1.0
         two_pi = 2.0 * math.pi
         gait_phase = np.array([
@@ -208,14 +208,14 @@ class ControlNode(Node):
         # target joint positions (PD control)
         self.action = self.policy.inference(obs)
 
-        # build the command: [qpos_des, qvel_des, tau_ff, kp, kd]
+        # build the command: [qpos_des, qvel_des, Kp, Kd, tau_ff]
         qpos_des = self.action * self.action_scale + self.qpos_joints_default
         qvel_des = np.zeros(self.act_size, dtype=np.float32)
         tau_ff = np.zeros(self.act_size, dtype=np.float32)
 
         # publish the command
         cmd_msg = Float32MultiArray()
-        cmd_msg.data = np.concatenate([qpos_des, qvel_des, tau_ff, self.Kp, self.Kd]).tolist()
+        cmd_msg.data = np.concatenate([qpos_des, qvel_des, self.Kp, self.Kd, tau_ff]).tolist()
         self.command_pub.publish(cmd_msg)
 
 

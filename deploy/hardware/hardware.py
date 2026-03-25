@@ -454,38 +454,23 @@ class ControlNode(Node):
                 self.low_cmd.motor_cmd[i].kp = ratio * self.Kp[i]
                 self.low_cmd.motor_cmd[i].kd = ratio * self.Kd[i]
 
-        # [control]: hold default position for now
+        # [control]: read from ROS2 command subscriber
         elif fsm_state == "control":
+            with self.cmd_lock:
+                q_cmd = self.q_cmd.copy()
+                dq_cmd = self.dq_cmd.copy()
+                Kp_cmd = self.Kp_cmd.copy()
+                Kd_cmd = self.Kd_cmd.copy()
+                tau_ff_cmd = self.tau_ff_cmd.copy()
             for i in range(G1_NUM_MOTOR):
                 self.low_cmd.mode_pr = Mode.PR
                 self.low_cmd.mode_machine = self.mode_machine_
                 self.low_cmd.motor_cmd[i].mode = 1
-                self.low_cmd.motor_cmd[i].tau = 0.0
-                self.low_cmd.motor_cmd[i].q = self.default_joint_pos[i]
-                self.low_cmd.motor_cmd[i].dq = 0.0
-                self.low_cmd.motor_cmd[i].kp = self.Kp[i]
-                self.low_cmd.motor_cmd[i].kd = self.Kd[i]
-
-        # # [Stage 2]: control loop (reads from ROS2 command subscriber)
-        # else:
-        #     if self.fsm_state == 1:
-        #         print("[Stage 2]: Running control loop...")
-        #         self.fsm_state = 2
-        #     with self.cmd_lock:
-        #         q_cmd = self.q_cmd.copy()
-        #         dq_cmd = self.dq_cmd.copy()
-        #         Kp_cmd = self.Kp_cmd.copy()
-        #         Kd_cmd = self.Kd_cmd.copy()
-        #         tau_ff_cmd = self.tau_ff_cmd.copy()
-        #     for i in range(G1_NUM_MOTOR):
-        #         self.low_cmd.mode_pr = Mode.PR
-        #         self.low_cmd.mode_machine = self.mode_machine_
-        #         self.low_cmd.motor_cmd[i].mode = 1  # 1:Enable, 0:Disable
-        #         self.low_cmd.motor_cmd[i].tau = tau_ff_cmd[i]
-        #         self.low_cmd.motor_cmd[i].q = q_cmd[i]
-        #         self.low_cmd.motor_cmd[i].dq = dq_cmd[i]
-        #         self.low_cmd.motor_cmd[i].kp = Kp_cmd[i]
-        #         self.low_cmd.motor_cmd[i].kd = Kd_cmd[i]
+                self.low_cmd.motor_cmd[i].tau = tau_ff_cmd[i]
+                self.low_cmd.motor_cmd[i].q = q_cmd[i]
+                self.low_cmd.motor_cmd[i].dq = dq_cmd[i]
+                self.low_cmd.motor_cmd[i].kp = Kp_cmd[i]
+                self.low_cmd.motor_cmd[i].kd = Kd_cmd[i]
 
         # check sum commands for safety and then publish
         self.low_cmd.crc = self.crc.Crc(self.low_cmd)
