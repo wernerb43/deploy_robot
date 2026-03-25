@@ -18,7 +18,7 @@ import yaml
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32, Float64, Float32MultiArray
+from std_msgs.msg import Float64, Float32MultiArray, String
 
 # directory imports
 import os
@@ -125,11 +125,15 @@ class ControlNode(Node):
         self.tau_ff_cmd = np.zeros(G1_NUM_MOTOR)
 
         # locks for thread safety
+        self.fsm_lock = threading.Lock()       # protects FSM state
         self.sensor_lock = threading.Lock()    # protects sensor state arrays
         self.cmd_lock = threading.Lock()       # protects command arrays
 
-        # flag for which part of startup we are in
-        self.stage = -1
+        # finite state machine state
+        self.fsm_state = "init"
+        self.prev_fsm_state = "init"
+        self.state_start_time = 0.0
+        self.state_start_q = np.zeros(G1_NUM_MOTOR)
 
         # other stuff from unitree's example
         self.time_ = 0.0
@@ -159,8 +163,7 @@ class ControlNode(Node):
     def load_params(self):
 
         # time to interpolate to initial
-        self.interp_default_pos_duration = self.config['interp_default_pos_duration']   # float
-        self.hold_default_pos_duration = self.config['hold_default_pos_duration']       # float
+        self.home_pos_duration = self.config['home_pos_duration']   # float
 
         # default joint positions
         self.default_joint_pos = self.config['default_joint_pos'] # list
@@ -170,8 +173,7 @@ class ControlNode(Node):
         self.Kd = self.config['Kd']  # list
 
         # type checks
-        assert type(self.interp_default_pos_duration) in [float], "interp_default_pos_duration must be a float."
-        assert type(self.hold_default_pos_duration) in [float], "hold_default_pos_duration must be a float."
+        assert type(self.home_pos_duration) in [float], "home_pos_duration must be a float."
         assert type(self.default_joint_pos) == list, "default_joint_pos must be a list."
         assert type(self.Kp) == list, "Kp must be a list."
         assert type(self.Kd) == list, "Kd must be a list."
@@ -181,8 +183,7 @@ class ControlNode(Node):
         assert len(self.Kd) == G1_NUM_MOTOR, f"Expected {G1_NUM_MOTOR} Kd values, got {len(self.Kd)}."
 
         # value checks
-        assert self.interp_default_pos_duration >= 3.0, "interp_default_pos_duration must take at least 3 seconds."
-        assert self.hold_default_pos_duration >= 3.0, "hold_default_pos_duration must take at least 3 seconds."
+        assert self.home_pos_duration >= 3.0, "home_pos_duration must take at least 3 seconds."
         assert len(self.default_joint_pos) == G1_NUM_MOTOR, (f"Expected {G1_NUM_MOTOR} default joint positions, "
                                                              f"got {len(self.default_joint_pos)}")
         for i in range(G1_NUM_MOTOR):
@@ -215,18 +216,16 @@ class ControlNode(Node):
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_)
         self.lowstate_subscriber.Init(self.LowStateHandler, 10)
 
-        # TODO: consider also querying the second IMU via "rt/secondary_imu", "IMU_State_"
-
         print("Unitree SDK publishers and subscribers initialized successfully.")
 
         # ROS2 publishers
         self.imu_state_pub = self.create_publisher(Float32MultiArray, "imu_state", 10)
         self.joint_state_pub = self.create_publisher(Float32MultiArray, "joint_state", 10)
         self.hardware_time_pub = self.create_publisher(Float64, "hardware_time", 10)
-        self.state_machine_pub = self.create_publisher(Int32, "state_machine", 10)
 
-        # ROS2 subscriber for commands
+        # ROS2 subscribers
         self.command_sub = self.create_subscription(Float32MultiArray, "command", self.command_callback, 10)
+        self.fsm_sub = self.create_subscription(String, "deploy_robot/fsm", self.fsm_callback, 10)
 
         # sensor publish timer
         self.pub_timer = self.create_timer(ros_sensor_publish_dt, self.publish_sensor_data)
@@ -252,9 +251,36 @@ class ControlNode(Node):
 
 
     #################################################################
-    # PUBLISHING AND CALLBACKS
+    # ROS PUBLISHING AND CALLBACKS
     #################################################################
     
+    # callback to receive FSM state from joystick
+    def fsm_callback(self, msg: String):
+        with self.fsm_lock:
+            self.fsm_state = msg.data
+
+
+    # callback to receive command messages from ROS2
+    def command_callback(self, msg: Float32MultiArray):
+
+        # expected layout: [q(29), dq(29), Kp(29), Kd(29), tau_ff(29)] = 145 floats
+        data = np.array(msg.data, dtype=np.float64)
+
+        # safety check on command length
+        if len(data) != 5 * G1_NUM_MOTOR:
+            self.get_logger().warn(f"Expected {5 * G1_NUM_MOTOR} values in command, got {len(data)}")
+            return
+        
+        # update command arrays under lock
+        nu = G1_NUM_MOTOR
+        with self.cmd_lock:
+            self.q_cmd[:] =  data[0*nu : 1*nu]
+            self.dq_cmd[:] = data[1*nu : 2*nu]
+            self.Kp_cmd[:] = data[2*nu : 3*nu]
+            self.Kd_cmd[:] = data[3*nu : 4*nu]
+            self.tau_ff_cmd[:] = data[4*nu : 5*nu]
+
+
     # publish sensor data to ROS2 topics
     def publish_sensor_data(self):
         # read sensor data under lock
@@ -282,40 +308,15 @@ class ControlNode(Node):
         time_msg = Float64()
         time_msg.data = self.time_
 
-        # stage
-        state_machine_msg = Int32()
-        state_machine_msg.data = self.stage
-
         # publish to ROS2 topics
         self.imu_state_pub.publish(imu_msg)
         self.joint_state_pub.publish(joint_msg)
         self.hardware_time_pub.publish(time_msg)
-        self.state_machine_pub.publish(state_machine_msg)
+
 
     #################################################################
-    # HARDWARE
+    # SDK HARDWARE
     #################################################################
-
-    # callback to receive command messages from ROS2
-    def command_callback(self, msg: Float32MultiArray):
-
-        # expected layout: [q(29), dq(29), Kp(29), Kd(29), tau_ff(29)] = 145 floats
-        data = np.array(msg.data, dtype=np.float64)
-
-        # safety check on command length
-        if len(data) != 5 * G1_NUM_MOTOR:
-            self.get_logger().warn(f"Expected {5 * G1_NUM_MOTOR} values in command, got {len(data)}")
-            return
-        
-        # update command arrays under lock
-        nu = G1_NUM_MOTOR
-        with self.cmd_lock:
-            self.q_cmd[:] =  data[0*nu : 1*nu]
-            self.dq_cmd[:] = data[1*nu : 2*nu]
-            self.Kp_cmd[:] = data[2*nu : 3*nu]
-            self.Kd_cmd[:] = data[3*nu : 4*nu]
-            self.tau_ff_cmd[:] = data[4*nu : 5*nu]
-
 
     # callback to receive low state messages
     def LowStateHandler(self, msg: LowState_):
@@ -346,57 +347,107 @@ class ControlNode(Node):
 
         self.time_ += low_level_control_dt
 
-        # [Stage 0]: interpolate to default joint positions
-        if self.time_ < self.interp_default_pos_duration :
-            ratio = np.clip(self.time_ / self.interp_default_pos_duration, 0.0, 1.0)
-            if self.stage == -1:
-                print(f"[Stage 0]: Interpolating to default joint positions ({self.interp_default_pos_duration:.1f}s)...")
-                self.stage = 0
-            for i in range(G1_NUM_MOTOR):
-                self.low_cmd.mode_pr = Mode.PR
-                self.low_cmd.mode_machine = self.mode_machine_
-                self.low_cmd.motor_cmd[i].mode =  1 # 1:Enable, 0:Disable
-                self.low_cmd.motor_cmd[i].tau = 0. 
-                self.low_cmd.motor_cmd[i].q = (1.0 - ratio) * self.low_state.motor_state[i].q + ratio * self.default_joint_pos[i]
-                self.low_cmd.motor_cmd[i].dq = 0. 
-                self.low_cmd.motor_cmd[i].kp = self.Kp[i]
-                self.low_cmd.motor_cmd[i].kd = self.Kd[i]
+        # read FSM state under lock
+        with self.fsm_lock:
+            fsm_state = self.fsm_state
 
-        # [Stage 1]: hold default joint positions
-        elif self.time_ < self.interp_default_pos_duration + self.hold_default_pos_duration:
-            if self.stage == 0:
-                print(f"[Stage 1]: Holding default joint positions ({self.hold_default_pos_duration:.1f}s)...")
-                self.stage = 1
-            for i in range(G1_NUM_MOTOR):
-                self.low_cmd.mode_pr = Mode.PR
-                self.low_cmd.mode_machine = self.mode_machine_
-                self.low_cmd.motor_cmd[i].mode =  1 # 1:Enable, 0:Disable
-                self.low_cmd.motor_cmd[i].tau = 0. 
-                self.low_cmd.motor_cmd[i].q = self.default_joint_pos[i]
-                self.low_cmd.motor_cmd[i].dq = 0. 
-                self.low_cmd.motor_cmd[i].kp = self.Kp[i]
-                self.low_cmd.motor_cmd[i].kd = self.Kd[i]
+        # detect state transition
+        if fsm_state != self.prev_fsm_state:
+            print(f"FSM: {self.prev_fsm_state} -> {fsm_state}")
+            self.state_start_time = self.time_
+            with self.sensor_lock:
+                self.state_start_q = self.q.copy()
+            self.prev_fsm_state = fsm_state
 
-        # [Stage 2]: control loop (reads from ROS2 command subscriber)
-        else:
-            if self.stage == 1:
-                print("[Stage 2]: Running control loop...")
-                self.stage = 2
-            with self.cmd_lock:
-                q_cmd = self.q_cmd.copy()
-                dq_cmd = self.dq_cmd.copy()
-                Kp_cmd = self.Kp_cmd.copy()
-                Kd_cmd = self.Kd_cmd.copy()
-                tau_ff_cmd = self.tau_ff_cmd.copy()
+        # [init]: zero out all commands
+        if fsm_state == "init":
             for i in range(G1_NUM_MOTOR):
                 self.low_cmd.mode_pr = Mode.PR
                 self.low_cmd.mode_machine = self.mode_machine_
-                self.low_cmd.motor_cmd[i].mode = 1  # 1:Enable, 0:Disable
-                self.low_cmd.motor_cmd[i].tau = tau_ff_cmd[i]
-                self.low_cmd.motor_cmd[i].q = q_cmd[i]
-                self.low_cmd.motor_cmd[i].dq = dq_cmd[i]
-                self.low_cmd.motor_cmd[i].kp = Kp_cmd[i]
-                self.low_cmd.motor_cmd[i].kd = Kd_cmd[i]
+                self.low_cmd.motor_cmd[i].mode = 1
+                self.low_cmd.motor_cmd[i].tau = 0.0
+                self.low_cmd.motor_cmd[i].q = 0.0
+                self.low_cmd.motor_cmd[i].dq = 0.0
+                self.low_cmd.motor_cmd[i].kp = 0.0
+                self.low_cmd.motor_cmd[i].kd = 0.0
+
+        # [damp]: Kd damping, no position tracking
+        elif fsm_state == "damp":
+            for i in range(G1_NUM_MOTOR):
+                self.low_cmd.mode_pr = Mode.PR
+                self.low_cmd.mode_machine = self.mode_machine_
+                self.low_cmd.motor_cmd[i].mode = 1
+                self.low_cmd.motor_cmd[i].tau = 0.0
+                self.low_cmd.motor_cmd[i].q = 0.0
+                self.low_cmd.motor_cmd[i].dq = 0.0
+                self.low_cmd.motor_cmd[i].kp = 0.0
+                self.low_cmd.motor_cmd[i].kd = 3.0
+
+        # [home]: interpolate to default joint positions and gains
+        elif fsm_state == "home":
+            elapsed = self.time_ - self.state_start_time
+            ratio = np.clip(elapsed / self.home_pos_duration, 0.0, 1.0)
+            for i in range(G1_NUM_MOTOR):
+                self.low_cmd.mode_pr = Mode.PR
+                self.low_cmd.mode_machine = self.mode_machine_
+                self.low_cmd.motor_cmd[i].mode = 1
+                self.low_cmd.motor_cmd[i].tau = 0.0
+                self.low_cmd.motor_cmd[i].q = (1.0 - ratio) * self.state_start_q[i] + ratio * self.default_joint_pos[i]
+                self.low_cmd.motor_cmd[i].dq = 0.0
+                self.low_cmd.motor_cmd[i].kp = ratio * self.Kp[i]
+                self.low_cmd.motor_cmd[i].kd = ratio * self.Kd[i]
+
+        # # [Stage 0]: interpolate to default joint positions
+        # if self.time_ < self.interp_default_pos_duration :
+        #     ratio = np.clip(self.time_ / self.interp_default_pos_duration, 0.0, 1.0)
+        #     if self.fsm_state == -1:
+        #         print(f"[Stage 0]: Interpolating to default joint positions ({self.interp_default_pos_duration:.1f}s)...")
+        #         self.fsm_state = 0
+        #     for i in range(G1_NUM_MOTOR):
+        #         self.low_cmd.mode_pr = Mode.PR
+        #         self.low_cmd.mode_machine = self.mode_machine_
+        #         self.low_cmd.motor_cmd[i].mode =  1 # 1:Enable, 0:Disable
+        #         self.low_cmd.motor_cmd[i].tau = 0.
+        #         self.low_cmd.motor_cmd[i].q = (1.0 - ratio) * self.low_state.motor_state[i].q + ratio * self.default_joint_pos[i]
+        #         self.low_cmd.motor_cmd[i].dq = 0.
+        #         self.low_cmd.motor_cmd[i].kp = self.Kp[i]
+        #         self.low_cmd.motor_cmd[i].kd = self.Kd[i]
+
+        # # [Stage 1]: hold default joint positions
+        # elif self.time_ < self.interp_default_pos_duration + self.hold_default_pos_duration:
+        #     if self.fsm_state == 0:
+        #         print(f"[Stage 1]: Holding default joint positions ({self.hold_default_pos_duration:.1f}s)...")
+        #         self.fsm_state = 1
+        #     for i in range(G1_NUM_MOTOR):
+        #         self.low_cmd.mode_pr = Mode.PR
+        #         self.low_cmd.mode_machine = self.mode_machine_
+        #         self.low_cmd.motor_cmd[i].mode =  1 # 1:Enable, 0:Disable
+        #         self.low_cmd.motor_cmd[i].tau = 0.
+        #         self.low_cmd.motor_cmd[i].q = self.default_joint_pos[i]
+        #         self.low_cmd.motor_cmd[i].dq = 0.
+        #         self.low_cmd.motor_cmd[i].kp = self.Kp[i]
+        #         self.low_cmd.motor_cmd[i].kd = self.Kd[i]
+
+        # # [Stage 2]: control loop (reads from ROS2 command subscriber)
+        # else:
+        #     if self.fsm_state == 1:
+        #         print("[Stage 2]: Running control loop...")
+        #         self.fsm_state = 2
+        #     with self.cmd_lock:
+        #         q_cmd = self.q_cmd.copy()
+        #         dq_cmd = self.dq_cmd.copy()
+        #         Kp_cmd = self.Kp_cmd.copy()
+        #         Kd_cmd = self.Kd_cmd.copy()
+        #         tau_ff_cmd = self.tau_ff_cmd.copy()
+        #     for i in range(G1_NUM_MOTOR):
+        #         self.low_cmd.mode_pr = Mode.PR
+        #         self.low_cmd.mode_machine = self.mode_machine_
+        #         self.low_cmd.motor_cmd[i].mode = 1  # 1:Enable, 0:Disable
+        #         self.low_cmd.motor_cmd[i].tau = tau_ff_cmd[i]
+        #         self.low_cmd.motor_cmd[i].q = q_cmd[i]
+        #         self.low_cmd.motor_cmd[i].dq = dq_cmd[i]
+        #         self.low_cmd.motor_cmd[i].kp = Kp_cmd[i]
+        #         self.low_cmd.motor_cmd[i].kd = Kd_cmd[i]
 
         # check sum commands for safety and then publish
         self.low_cmd.crc = self.crc.Crc(self.low_cmd)
