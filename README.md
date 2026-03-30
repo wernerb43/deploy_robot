@@ -16,7 +16,7 @@ python motions/get_wandb_motion.py wandb-registry-Motions/walk1_subject1:latest
 ```
 Download a policy from WandB:
 ```bash
-python utils/get_wandb_policy.py sesteban-california-institute-of-technology-caltech/mjlab/bysdsnbu
+python policy/get_wandb_policy.py sesteban-california-institute-of-technology-caltech/mjlab/bysdsnbu
 ```
 
 ---
