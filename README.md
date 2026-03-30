@@ -1,4 +1,6 @@
 # Deploy Robot in Simulation and on Hardware
+<p align="center"><img src="utils/img/menhir.png" width="50%"/></p>
+
 This repo is for deploying asynchronous sim and real robot code for the Unitree G1 robot. 
 
 A brief overview of the repo structure is as follows:
