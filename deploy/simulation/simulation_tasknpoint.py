@@ -79,6 +79,9 @@ class SimulationNode(Node):
     self.command_sub = self.create_subscription(
       Float32MultiArray, "deploy_robot/command", self.command_callback, 10
     )
+    self.motion_frame_sub = self.create_subscription(
+      Float64, "deploy_robot/motion_frame", self.motion_frame_callback, 10
+    )
 
     # initial command state
     self.command_received = False
@@ -87,6 +90,7 @@ class SimulationNode(Node):
     self.tau_ff = np.zeros(self.nu)
     self.Kp = np.zeros(self.nu)
     self.Kd = np.zeros(self.nu)
+    self.motion_frame = 0
 
     # create a timer to run the simulation loop
     sim_period = 0.0  # run as fast as possible, real-time sync is handled in the loop
@@ -242,6 +246,10 @@ class SimulationNode(Node):
     self.Kp = data[2 * self.nu : 3 * self.nu]
     self.Kd = data[3 * self.nu : 4 * self.nu]
     self.tau_ff = data[4 * self.nu : 5 * self.nu]
+
+  # motion frame callback
+  def motion_frame_callback(self, msg):
+    self.motion_frame = int(msg.data)
 
   # publish pelvis IMU: [rpy(3), quat(4), gyro(3), acc(3)]
   def publish_pelvis_imu(self):

@@ -58,6 +58,9 @@ class ControlNode(Node):
     self.command_pub = self.create_publisher(
       Float32MultiArray, "deploy_robot/command", 10
     )
+    self.motion_frame_pub = self.create_publisher(
+      Float64, "deploy_robot/motion_frame", 10
+    )
 
     # ROS subscribers
     self.pelvis_imu_sub = self.create_subscription(
@@ -80,9 +83,8 @@ class ControlNode(Node):
       Float32MultiArray, "deploy_robot/goals", self.goal_callback, 10
     )
     self.motion_trigger_sub = self.create_subscription(
-        Float32MultiArray, "deploy_robot/joystick", self.motion_trigger_callback, 10
+      Float32MultiArray, "deploy_robot/joystick", self.motion_trigger_callback, 10
     )
-
 
     # control timer to run the policy at a fixed frequency
     self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
@@ -231,7 +233,6 @@ class ControlNode(Node):
       self.action_triggered = True
       self.policy_start_time = self.sim_time
 
-
   #################################################################
   # OBSERVATION
   #################################################################
@@ -247,6 +248,11 @@ class ControlNode(Node):
         self.action_triggered = False
     else:
       frame = 0
+
+    # publish the current motion frame
+    frame_msg = Float64()
+    frame_msg.data = float(frame)
+    self.motion_frame_pub.publish(frame_msg)
 
     # --- command (58) : motion reference joint_pos + joint_vel ---
     command = np.concatenate(

@@ -59,6 +59,10 @@ class ControlNode(Node):
       Float32MultiArray, "deploy_robot/command", 10
     )
 
+    self.motion_frame_pub = self.create_publisher(
+      Float64, "deploy_robot/motion_frame", 10
+    )
+
     # ROS subscribers
     self.pelvis_imu_sub = self.create_subscription(
       Float32MultiArray, "deploy_robot/pelvis_imu_state", self.pelvis_imu_callback, 10
@@ -259,7 +263,11 @@ class ControlNode(Node):
     else:
       frame = 0
 
-    print(self.goal_targets)
+    # publish the motion frame
+    frame_msg = Float64()
+    frame_msg.data = float(frame)
+    self.motion_frame_pub.publish(frame_msg)
+
     # --- command (58) : motion reference joint_pos + joint_vel ---
     command = np.concatenate(
       [
@@ -268,6 +276,8 @@ class ControlNode(Node):
         self.goal_targets,
       ]
     )
+    # print goal targets
+    print(f"Goal targets: {self.goal_targets}")
 
     # --- motion_anchor_ori_b (6) : desired anchor orientation in base frame (6D rotation) ---
     # apply the captured yaw offset so the motion is replayed in the robot's initial heading

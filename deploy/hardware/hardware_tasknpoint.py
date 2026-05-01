@@ -158,9 +158,13 @@ class ControlNode(Node):
     # safety flags
     self.safety_triggered = False
 
-    # perception: pelvis pose from external system (set by pelvis_pose_callback)
+    # perception: pelvis and ball poses from external system
     self.pelvis_pose_position = None
     self.pelvis_pose_quaternion = None
+    self.ball_pose_position = None
+
+    # motion frame from control node
+    self.motion_frame = 0
 
     # goal targets (initialized lazily on first valid perception pose)
     self._goals_initialized = False
@@ -198,6 +202,13 @@ class ControlNode(Node):
 
     # default joint positions
     self.default_joint_pos = self.config["default_joint_pos"]  # list
+
+    # motion and contact params
+    self.contact_phase = float(self.config["contact_phase"])
+    self.contact_duration = float(self.config["contact_duration"])
+    motion_path_full = ROOT_DIR + "/motions/" + self.config["motion_path"]
+    motion = np.load(motion_path_full)
+    self.motion_num_frames = int(motion["joint_pos"].shape[0])
 
     # PD gains
     self.Kp = self.config["Kp"]  # list
@@ -249,7 +260,7 @@ class ControlNode(Node):
         self._goal_vel_w.append(np.zeros(3, dtype=np.float32))
       elif goal_type == "velocity":
         self._goal_pos_w.append(np.zeros(3, dtype=np.float32))
-        self._goal_vel_w.append(R_init @ vec)
+        self._goal_vel_w.append(vec)
       else:
         raise ValueError(f"Unsupported goal type: {goal_type!r}")
 
@@ -306,10 +317,16 @@ class ControlNode(Node):
     self.fsm_sub = self.create_subscription(
       String, "deploy_robot/fsm", self.fsm_callback, 10
     )
+    self.motion_frame_sub = self.create_subscription(
+      Float64, "deploy_robot/motion_frame", self.motion_frame_callback, 10
+    )
 
     # Perception subscribers
     self.pelvis_pose_sub = self.create_subscription(
       PoseStamped, "/g1_pelvis/pose", self.pelvis_pose_callback, 10
+    )
+    self.ball_pose_sub = self.create_subscription(
+      PoseStamped, "/ball/pose", self.ball_pose_callback, 10
     )
 
     # sensor publish timer
@@ -362,6 +379,10 @@ class ControlNode(Node):
       self.Kp_cmd[:] = data[2 * nu : 3 * nu]
       self.Kd_cmd[:] = data[3 * nu : 4 * nu]
       self.tau_ff_cmd[:] = data[4 * nu : 5 * nu]
+
+  # callback to receive motion frame from control node
+  def motion_frame_callback(self, msg: Float64):
+    self.motion_frame = int(msg.data)
 
   # publish sensor data to ROS2 topics
   def publish_sensor_data(self):
@@ -437,26 +458,34 @@ class ControlNode(Node):
     fsm_time_msg = Float64()
     fsm_time_msg.data = self.fsm_time
 
-    # compute goals in anchor frame from world-frame targets anchored to initial pelvis pose
+    # compute goals in anchor (pelvis) frame
     goals_msg = Float32MultiArray()
     with self.sensor_lock:
       pelvis_pos = self.pelvis_pose_position
       pelvis_quat = self.pelvis_pose_quaternion
+      ball_pos_w = self.ball_pose_position
     if pelvis_pos is not None and pelvis_quat is not None:
       pelvis_pos = np.array(pelvis_pos, dtype=np.float32)
       pelvis_quat = np.array(pelvis_quat, dtype=np.float32)
       if not self._goals_initialized:
         self.init_goals(pelvis_pos, pelvis_quat)
       R = quat_to_rotation_matrix(pelvis_quat)
+      contact_end_frame = int(
+        self.motion_num_frames * (self.contact_phase + self.contact_duration)
+      )
       goal_vecs = []
-      for goal_type, pos_w, vel_w in zip(
+      for goal_type, goal_pos_w, vel_w in zip(
         self._goal_types, self._goal_pos_w, self._goal_vel_w
       ):
-        if goal_type == "position":
+        if goal_type == "position": # TODO this doesn't work with fk goals, just ball position goals
+          if self.motion_frame == 0 or self.motion_frame > contact_end_frame:
+            pos_w = goal_pos_w
+          else:
+            pos_w = np.array(ball_pos_w, dtype=np.float32) 
           goal_vecs.append(R.T @ (pos_w - pelvis_pos))
         else:  # velocity
-          goal_vecs.append(R.T @ vel_w)
-      if goal_vecs:
+          goal_vecs.append(vel_w)
+      if len(goal_vecs) == len(self._goal_types):
         goals_msg.data = np.concatenate(goal_vecs).tolist()
     # publish to ROS2 topics
     self.pelvis_imu_state_pub.publish(pelvis_imu_msg)
@@ -508,6 +537,13 @@ class ControlNode(Node):
     with self.sensor_lock:
       self.pelvis_pose_position = np.array([p.x, p.y, p.z], dtype=np.float64)
       self.pelvis_pose_quaternion = np.array([q.w, q.x, q.y, q.z], dtype=np.float64)
+
+  def ball_pose_callback(self, msg: PoseStamped):
+    p = msg.pose.position
+    q = msg.pose.orientation  # ROS: (x, y, z, w)
+    with self.sensor_lock:
+      self.ball_pose_position = np.array([p.x, p.y, p.z], dtype=np.float64)
+      self.ball_pose_quaternion = np.array([q.w, q.x, q.y, q.z], dtype=np.float64)
 
   # main control loop to send low-level commands
   def LowCmdWrite(self):
