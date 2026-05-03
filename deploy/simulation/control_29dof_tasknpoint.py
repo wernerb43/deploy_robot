@@ -105,7 +105,10 @@ class ControlNode(Node):
     self.action_triggered = False
 
     # initialize goal targets (flat vector, sized from config goals block)
-    goal_dim = sum(len(g["vector"]) for g in self.config.get("goals", []))
+    goal_dim = sum(
+      4 if g["type"] == "orientation" else len(g["vector"])
+      for g in self.config.get("goals", [])
+    )
     self.goal_targets = np.zeros(goal_dim, dtype=np.float32)
 
     # yaw alignment between robot-at-policy-start and motion frame 0 (identity until captured on first tick)
@@ -280,7 +283,7 @@ class ControlNode(Node):
     dqj = self.qvel_joints
 
     # --- actions (29) : previous action ---
-    # concatenate: 64 + 6 + 3 + 29 + 29 + 29 = 160
+    # concatenate: command(68) + anchor_ori_b(6) + ang_vel(3) + joint_pos(29) + joint_vel(29) + action(29) = 164
     obs = np.concatenate(
       [
         command,

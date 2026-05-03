@@ -321,7 +321,7 @@ class ControlNode(Node):
       Float64, "deploy_robot/motion_frame", self.motion_frame_callback, 10
     )
 
-    # Perception subscribers
+    # Perception subscribers (all world frame)
     self.pelvis_pose_sub = self.create_subscription(
       PoseStamped, "/g1_pelvis/pose", self.pelvis_pose_callback, 10
     )
@@ -477,11 +477,13 @@ class ControlNode(Node):
       for goal_type, goal_pos_w, vel_w in zip(
         self._goal_types, self._goal_pos_w, self._goal_vel_w
       ):
-        if goal_type == "position": # TODO this doesn't work with fk goals, just ball position goals
+        if (
+          goal_type == "position"
+        ):  # TODO this doesn't work with fk goals, just ball position goals
           if self.motion_frame == 0 or self.motion_frame > contact_end_frame:
             pos_w = goal_pos_w
           else:
-            pos_w = np.array(ball_pos_w, dtype=np.float32) 
+            pos_w = np.array(ball_pos_w, dtype=np.float32)
           goal_vecs.append(R.T @ (pos_w - pelvis_pos))
         else:  # velocity
           goal_vecs.append(vel_w)

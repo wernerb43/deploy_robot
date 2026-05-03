@@ -5,7 +5,7 @@ xml_path: "g1_29dof_tasknpoint.xml"
 # motion_path: "walk1_subject1.npz"
 # policy_path: "g1_29dof_mimic_squat.onnx"
 # motion_path: "srb_squat.npz"
-policy_path: "forehand_2.onnx"
+policy_path: "forehand_orientation.onnx"
 motion_path: "forehand.npz"
 
 # interpolate to default position duration
@@ -50,3 +50,6 @@ goals:
   - name: "right_hand_target_vel"
     type: "velocity"
     vector: [1.0, 0.0, 0.1]
+  - name: "right_hand_target_ori"
+    type: "orientation"
+    vector: [0.39, 0.0, -1.57]       # target_orientation_mean={"roll": np.pi/8, "pitch": 0.0, "yaw": -np.pi / 2},

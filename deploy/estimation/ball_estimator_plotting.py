@@ -19,14 +19,12 @@ import sys
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
+from std_msgs.msg import Float32MultiArray
 
 ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 sys.path.append(ROOT_DIR)
 
-GRAVITY = 9.81
 HISTORY_LEN = 100
-TRAJ_DURATION = 2.0
-TRAJ_STEPS = 50
 
 
 class BallEstimatorPlottingNode(Node):
@@ -37,11 +35,15 @@ class BallEstimatorPlottingNode(Node):
     self.ball_pos: np.ndarray | None = None
     self.pelvis_pos: np.ndarray | None = None
     self.target_pos: np.ndarray | None = None
+    self.trajectory: np.ndarray | None = None  # shape (N, 3)
     self.ball_history: deque[tuple[float, np.ndarray]] = deque(maxlen=HISTORY_LEN)
 
     self.create_subscription(PoseStamped, "/ball/pose", self.ball_callback, 10)
     self.create_subscription(PoseStamped, "/g1_pelvis/pose", self.pelvis_callback, 10)
     self.create_subscription(PoseStamped, "/ball/target_pose", self.target_callback, 10)
+    self.create_subscription(
+      Float32MultiArray, "/ball/trajectory", self.trajectory_callback, 10
+    )
 
   def ball_callback(self, msg: PoseStamped):
     t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
@@ -62,43 +64,19 @@ class BallEstimatorPlottingNode(Node):
         [msg.pose.position.x, msg.pose.position.y, msg.pose.position.z]
       )
 
+  def trajectory_callback(self, msg: Float32MultiArray):
+    data = np.array(msg.data, dtype=np.float64)
+    with self.lock:
+      self.trajectory = data.reshape(-1, 3) if len(data) >= 3 else None
+
   def get_state(self):
     with self.lock:
       ball = self.ball_pos.copy() if self.ball_pos is not None else None
       pelvis = self.pelvis_pos.copy() if self.pelvis_pos is not None else None
       target = self.target_pos.copy() if self.target_pos is not None else None
+      traj = self.trajectory.copy() if self.trajectory is not None else None
       history = list(self.ball_history)
-    vel = _estimate_velocity(history)
-    return ball, pelvis, target, history, vel
-
-
-def _estimate_velocity(
-  history: list[tuple[float, np.ndarray]],
-) -> np.ndarray | None:
-  if len(history) < 3:
-    return None
-  recent = history[-5:] if len(history) >= 5 else history
-  times = np.array([h[0] for h in recent])
-  positions = np.array([h[1] for h in recent])
-  ts = times - times[0]
-  # Subtract gravity from z before linear fitting so the fit is unbiased
-  pos_corrected = positions.copy()
-  pos_corrected[:, 2] += 0.5 * GRAVITY * ts**2
-  A = np.column_stack([np.ones_like(ts), ts])
-  result = np.linalg.lstsq(A, pos_corrected, rcond=None)
-  return result[0][1]  # velocity = slope of the linear fit
-
-
-def _compute_trajectory(pos: np.ndarray, vel: np.ndarray) -> np.ndarray:
-  ts = np.linspace(0, TRAJ_DURATION, TRAJ_STEPS)
-  traj = np.column_stack(
-    [
-      pos[0] + vel[0] * ts,
-      pos[1] + vel[1] * ts,
-      pos[2] + vel[2] * ts - 0.5 * GRAVITY * ts**2,
-    ]
-  )
-  return traj[traj[:, 2] >= 0]
+    return ball, pelvis, target, traj, history
 
 
 def main():
@@ -112,7 +90,7 @@ def main():
   ax = fig.add_subplot(111, projection="3d")
 
   def update(_frame):
-    ball, pelvis, target, history, vel = node.get_state()
+    ball, pelvis, target, traj, history = node.get_state()
     ax.cla()
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
@@ -131,17 +109,15 @@ def main():
         label="Ball history",
       )
 
-    if ball is not None and vel is not None:
-      traj = _compute_trajectory(ball, vel)
-      if len(traj) > 1:
-        ax.plot(
-          traj[:, 0],
-          traj[:, 1],
-          traj[:, 2],
-          "c--",
-          linewidth=1.5,
-          label="Estimated trajectory",
-        )
+    if traj is not None and len(traj) > 1:
+      ax.plot(
+        traj[:, 0],
+        traj[:, 1],
+        traj[:, 2],
+        "c--",
+        linewidth=1.5,
+        label="Estimated trajectory",
+      )
 
     if ball is not None:
       ax.scatter(*ball, c="green", s=80, marker="o", label="Ball", zorder=5)

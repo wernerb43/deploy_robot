@@ -29,7 +29,13 @@ ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 sys.path.append(ROOT_DIR)
 
 # custom imports
-from utils.math_utils import quat_to_rpy, quat_to_rotation_matrix
+from utils.math_utils import (
+  quat_conjugate,
+  quat_multiply,
+  quat_to_rotation_matrix,
+  quat_to_rpy,
+  rpy_to_quat,
+)
 
 
 ############################################################################
@@ -208,12 +214,9 @@ class SimulationNode(Node):
     R_init = quat_to_rotation_matrix(pelvis_quat)
 
     self._goal_types: list[str] = []
-    self._goal_pos_w: list[
-      np.ndarray
-    ] = []  # world-frame position targets (for position goals)
-    self._goal_vel_w: list[
-      np.ndarray
-    ] = []  # world-frame velocity targets (for velocity goals)
+    self._goal_pos_w: list[np.ndarray] = []  # world-frame position targets
+    self._goal_vel_w: list[np.ndarray] = []  # world-frame velocity targets
+    self._goal_quat_w: list[np.ndarray] = []  # world-frame quaternion [w,x,y,z] targets
 
     for goal in goals_cfg:
       vec = np.array(goal["vector"], dtype=np.float32)
@@ -223,9 +226,18 @@ class SimulationNode(Node):
         # rotate body-frame offset into world frame and translate by pelvis origin
         self._goal_pos_w.append(R_init @ vec + pelvis_pos)
         self._goal_vel_w.append(np.zeros(3, dtype=np.float32))
+        self._goal_quat_w.append(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
       elif goal_type == "velocity":
         self._goal_pos_w.append(np.zeros(3, dtype=np.float32))
+        # velocity vec is in body frame at init; rotate into world frame
         self._goal_vel_w.append(R_init @ vec)
+        self._goal_quat_w.append(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
+      elif goal_type == "orientation":
+        self._goal_pos_w.append(np.zeros(3, dtype=np.float32))
+        self._goal_vel_w.append(np.zeros(3, dtype=np.float32))
+        # vec is RPY offset relative to initial anchor; anchor into world frame
+        # to match training: target_orientation_w = anchor_quat * rpy_to_quat(rpy)
+        self._goal_quat_w.append(quat_multiply(pelvis_quat, rpy_to_quat(vec)))
       else:
         raise ValueError(f"Unsupported goal type: {goal_type!r}")
 
@@ -306,18 +318,21 @@ class SimulationNode(Node):
     pelvis_quat = self.mj_data.body("pelvis").xquat.astype(np.float32)  # [w, x, y, z]
     R = quat_to_rotation_matrix(pelvis_quat)
 
+    pelvis_quat_inv = quat_conjugate(pelvis_quat)
+
     goal_vecs = []
-    for (
-      goal_type,
-      pos_w,
-      vel_w,
-    ) in zip(  # TODO need to be able to handle orientations as well
-      self._goal_types, self._goal_pos_w, self._goal_vel_w
+    for goal_type, pos_w, vel_w, quat_w in zip(
+      self._goal_types, self._goal_pos_w, self._goal_vel_w, self._goal_quat_w
     ):
       if goal_type == "position":
+        # position in anchor (pelvis) frame, matching quat_apply(quat_inv(anchor), pos_w - anchor_pos)
         goal_vecs.append(R.T @ (pos_w - pelvis_pos))
-      else:  # velocity
-        goal_vecs.append(R.T @ vel_w)
+      elif goal_type == "velocity":
+        # velocity is kept in world frame in training (no transform applied)
+        goal_vecs.append(vel_w)
+      elif goal_type == "orientation":
+        # 4-value quaternion in anchor frame: quat_inv(anchor) * target_ori_w
+        goal_vecs.append(quat_multiply(pelvis_quat_inv, quat_w))
 
     goal_msg = Float32MultiArray()
     goal_msg.data = np.concatenate(goal_vecs).tolist()

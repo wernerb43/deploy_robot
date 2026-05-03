@@ -30,7 +30,7 @@ sys.path.append(ROOT_DIR)
 # ESTIMATOR NODE
 ############################################################################
 GRAVITY = 9.81
-COEFF_OF_RESTITUTION = 0.3
+COEFF_OF_RESTITUTION = 0.4
 
 
 class BallEstimatorNode(Node):
@@ -44,6 +44,11 @@ class BallEstimatorNode(Node):
     self.pelvis_quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
     self.target_pos = np.zeros(3, dtype=np.float64)
     self.target_time = -1.0
+    self.ball_trajectory_positions = np.zeros((0, 3), dtype=np.float64)
+    self.ball_trajectory_times = np.zeros(0, dtype=np.float64)
+    self.ball_trajectory_time_length = 5.0  # this is the amount of time in the future that the trajectory prediction should cover
+
+    self.dt = 0.02
 
     # Kalman filter state: [x, y, z, vx, vy, vz]
     self.kf_state = np.zeros(6, dtype=np.float64)
@@ -77,8 +82,11 @@ class BallEstimatorNode(Node):
     # publishers
     self.ball_pose_pub = self.create_publisher(PoseStamped, "/ball/target_pose", 10)
     self.ball_target_time = self.create_publisher(Float64, "/ball/target_time", 10)
+    self.ball_trajectory_pub = self.create_publisher(
+      Float32MultiArray, "/ball/trajectory", 10
+    )
 
-    self.create_timer(0.02, self.timer_callback)
+    self.create_timer(self.dt, self.timer_callback)
 
     print("Ball estimator node initialized.")
 
@@ -155,67 +163,80 @@ class BallEstimatorNode(Node):
 
   # given the estimated position and velocity, find the point closest to the robot target point in world frame along the ball's trajectory, this will be the target pos
   def estimate_target_point(self):
-    """
-    Minimize
-            || [x + vx*t, y + vy*t, z + vz*t - 0.5*g*t^2] - [x*, y*, z*] ||^2
-    over t >= 0.
+    if len(self.ball_trajectory_positions) == 0:
+      self.target_pos = self.nominal_target_pos.copy()
+      self.target_time = -1.0
+      return
 
-    Returns
-    -------
-    t_star : float
-            Optimal nonnegative time.
-    f_star : float
-            Minimum squared distance.
-    """
-    dq = self.ball_pos - self.nominal_target_pos
-    dx, dy, dz = dq
-    vx, vy, vz = self.ball_vel
-
-    def f(t):
-      xt = dx + vx * t
-      yt = dy + vy * t
-      zt = dz + vz * t - 0.5 * GRAVITY * t**2
-      return xt**2 + yt**2 + zt**2
-
-    # Coefficients of f'(t) = 0:
-    # g^2 t^3 - 3 g vz t^2 + 2(vx^2 + vy^2 + vz^2 - g dz)t + 2(dx vx + dy vy + dz vz) = 0
-    coeffs = np.array(
-      [
-        GRAVITY**2,
-        -3.0 * GRAVITY * vz,
-        2.0 * (vx**2 + vy**2 + vz**2 - GRAVITY * dz),
-        2.0 * (dx * vx + dy * vy + dz * vz),
-      ],
-      dtype=float,
+    dists_sq = np.sum(
+      (self.ball_trajectory_positions - self.nominal_target_pos) ** 2, axis=1
     )
+    idx = np.argmin(dists_sq)
 
-    roots = np.roots(coeffs)
-    # Keep only real roots with t >= 0
-    real_nonneg = roots[np.isclose(roots.imag, 0.0, atol=1e-10)].real
-    candidates = np.concatenate(([0.0], real_nonneg[real_nonneg >= 0.0]))
-    values = np.array([f(t) for t in candidates])
-    idx = np.argmin(values)
-
-    best_time, best_value = float(candidates[idx]), float(values[idx])
-    if (
-      best_value > 1
-    ):  # if the best value is still large, just go for the nominal target
-      self.target_pos = self.nominal_target_pos
+    if dists_sq[idx] > 1.0:  # closest point still far from target, fall back
+      self.target_pos = self.nominal_target_pos.copy()
       self.target_time = -1.0
     else:
-      self.target_pos = (
-        self.ball_pos
-        + self.ball_vel * best_time
-        + np.array([0.0, 0.0, -0.5 * GRAVITY * best_time**2])
-      )
-      self.target_time = best_time
+      self.target_pos = self.ball_trajectory_positions[idx].copy()
+      self.target_time = float(self.ball_trajectory_times[idx])
+
+  def estimate_ball_trajectory(self):
+    """
+    Returns (times, positions) for the ball's predicted trajectory.
+    times: shape (N,), positions: shape (N, 3), both in world frame.
+    Accounts for gravity and ground bounces via COEFF_OF_RESTITUTION.
+    """
+    x, y, z = self.ball_pos
+    vx, vy, vz = self.ball_vel
+    t_elapsed = 0.0
+
+    max_pts = int(np.ceil(self.ball_trajectory_time_length / self.dt)) + 1
+    buf_times = np.empty(max_pts, dtype=np.float64)
+    buf_positions = np.empty((max_pts, 3), dtype=np.float64)
+    n = 0
+
+    while t_elapsed < self.ball_trajectory_time_length:
+      remaining = self.ball_trajectory_time_length - t_elapsed
+
+      # Time to ground contact: z + vz*t - 0.5*g*t^2 = 0
+      # t = (vz + sqrt(vz^2 + 2*g*z)) / g  (first positive root)
+      discriminant = vz**2 + 2.0 * GRAVITY * max(z, 0.0)
+      t_bounce = (vz + np.sqrt(discriminant)) / GRAVITY
+      if t_bounce < 1e-6:
+        break
+
+      arc_duration = min(t_bounce, remaining)
+      ts = np.arange(0.0, arc_duration, self.dt)
+      if len(ts) == 0 or ts[-1] < arc_duration - 1e-9:
+        ts = np.append(ts, arc_duration)
+
+      k = len(ts)
+      buf_times[n : n + k] = t_elapsed + ts
+      buf_positions[n : n + k, 0] = x + vx * ts
+      buf_positions[n : n + k, 1] = y + vy * ts
+      buf_positions[n : n + k, 2] = z + vz * ts - 0.5 * GRAVITY * ts**2
+      n += k
+
+      t_elapsed += t_bounce
+
+      # Bounce: vz at impact is negative, flip and attenuate
+      vz_impact = vz - GRAVITY * t_bounce
+      vz = -COEFF_OF_RESTITUTION * vz_impact
+      x = x + vx * t_bounce
+      y = y + vy * t_bounce
+      z = 0.0
+
+    self.ball_trajectory_times = buf_times[:n]
+    self.ball_trajectory_positions = buf_positions[:n]
 
   def timer_callback(self):
     if not self.kf_initialized:
       return
+    self.estimate_ball_trajectory()
     self.estimate_target_point()
     self.publish_pose()
     self.publish_target_time()
+    self.publish_trajectory()
 
   def publish_pose(self):
     msg = PoseStamped()
@@ -235,6 +256,11 @@ class BallEstimatorNode(Node):
     msg = Float64()
     msg.data = self.target_time
     self.ball_target_time.publish(msg)
+
+  def publish_trajectory(self):
+    msg = Float32MultiArray()
+    msg.data = self.ball_trajectory_positions.flatten().tolist()
+    self.ball_trajectory_pub.publish(msg)
 
 
 ############################################################################
