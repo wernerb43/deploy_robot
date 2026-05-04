@@ -237,7 +237,7 @@ class SimulationNode(Node):
       elif goal_type == "velocity":
         self._goal_pos_w.append(np.zeros(3, dtype=np.float32))
         # velocity vec is in body frame at init; rotate into world frame
-        self._goal_vel_w.append(R_init @ vec)
+        self._goal_vel_w.append(vec)
         self._goal_quat_w.append(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
       elif goal_type == "orientation":
         self._goal_pos_w.append(np.zeros(3, dtype=np.float32))

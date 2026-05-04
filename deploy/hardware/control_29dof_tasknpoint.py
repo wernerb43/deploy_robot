@@ -115,6 +115,7 @@ class ControlNode(Node):
     self.action = np.zeros(self.act_size)
     self.action_triggered = False
     self.target_time = -1.0
+    self.motion_idx = 0
 
     # initialize goal targets (flat vector, sized from config goals block)
     goal_dim = sum(len(g["vector"]) for g in self.config.get("goals", []))
@@ -174,23 +175,31 @@ class ControlNode(Node):
     print(f"    Control frequency: {1.0 / self.ctrl_dt} Hz")
 
     # load motion reference data
-    motion_path = ROOT_DIR + "/motions/" + self.config["motion_path"]
-    motion = np.load(motion_path)
-    self.motion_fps = float(motion["fps"])
-    self.motion_joint_pos = motion["joint_pos"].astype(np.float32)
-    self.motion_joint_vel = motion["joint_vel"].astype(np.float32)
-    self.motion_body_quat_w = motion["body_quat_w"].astype(np.float32)
-    self.motion_num_frames = self.motion_joint_pos.shape[0]
-
-    # time from motion start to contact
-    self.contact_phase = float(self.config["contact_phase"])
-    self.time_to_contact = self.contact_phase * self.motion_num_frames * self.ctrl_dt
-
-    print(f"Loaded motion from [{motion_path}].")
-    print(f"    FPS: {self.motion_fps}")
-    print(f"    Frames: {self.motion_num_frames}")
-    print(f"    Duration: {self.motion_num_frames / self.motion_fps:.1f}s")
-    print(f"    Time to contact: {self.time_to_contact:.3f}s")
+    contact_phase_cfg = self.config["contact_phase"]
+    contact_phases = (
+      contact_phase_cfg if isinstance(contact_phase_cfg, list) else [contact_phase_cfg]
+    )
+    self.motions = []
+    self.time_to_contact = []
+    for i, mp in enumerate(self.config["motion_paths"]):
+      path = ROOT_DIR + "/motions/" + mp
+      m = np.load(path)
+      num_frames = m["joint_pos"].shape[0]
+      entry = {
+        "fps": float(m["fps"]),
+        "joint_pos": m["joint_pos"].astype(np.float32),
+        "joint_vel": m["joint_vel"].astype(np.float32),
+        "body_quat_w": m["body_quat_w"].astype(np.float32),
+        "num_frames": num_frames,
+      }
+      self.motions.append(entry)
+      ttc = contact_phases[i] * num_frames * self.ctrl_dt
+      self.time_to_contact.append(ttc)
+      print(f"Loaded motion from [{path}].")
+      print(f"    FPS: {entry['fps']}")
+      print(f"    Frames: {num_frames}")
+      print(f"    Duration: {num_frames / entry['fps']:.1f}s")
+      print(f"    Time to contact: {ttc:.3f}s")
 
     # find anchor body index against robot's full body list
     anchor_name = self.policy.metadata["anchor_body_name"]
@@ -259,9 +268,10 @@ class ControlNode(Node):
   # ball target time callback
   def target_time_callback(self, msg: Float64):
     self.target_time = msg.data
-    if not self.action_triggered and 0.0 < self.target_time <= self.time_to_contact:
+    ttc = self.time_to_contact[self.motion_idx]
+    if not self.action_triggered and 0.0 < self.target_time <= ttc:
       print(
-        f"Auto-trigger: target_time={self.target_time:.3f}s <= time_to_contact={self.time_to_contact:.3f}s"
+        f"Auto-trigger: target_time={self.target_time:.3f}s <= time_to_contact={ttc:.3f}s"
       )
       self.action_triggered = True
       self.policy_start_time = self.fsm_time
@@ -273,12 +283,14 @@ class ControlNode(Node):
   # build the observation vector for the policy
   # ['command', 'motion_anchor_ori_b', 'base_ang_vel', 'joint_pos', 'joint_vel', 'actions']
   def build_observation(self):
+    motion = self.motions[self.motion_idx]
+
     # motion frame: 1 frame per control_dt, matching training (time_steps += 1 per step_dt)
     # fsm_time is reset to 0 when the FSM is not in "control", so it's already relative to policy start
     if self.action_triggered:
       elapsed = self.fsm_time - self.policy_start_time
       frame = int(elapsed / self.ctrl_dt)
-      if frame >= self.motion_num_frames - 2:
+      if frame >= motion["num_frames"] - 2:
         self.action_triggered = False
     else:
       frame = 0
@@ -291,17 +303,15 @@ class ControlNode(Node):
     # --- command (58) : motion reference joint_pos + joint_vel ---
     command = np.concatenate(
       [
-        self.motion_joint_pos[frame],
-        self.motion_joint_vel[frame],
+        motion["joint_pos"][frame],
+        motion["joint_vel"][frame],
         self.goal_targets,
       ]
     )
-    # print goal targets
-    # print(f"Goal targets: {self.goal_targets}")
 
     # --- motion_anchor_ori_b (6) : desired anchor orientation in base frame (6D rotation) ---
     # apply the captured yaw offset so the motion is replayed in the robot's initial heading
-    motion_anchor_quat_w = self.motion_body_quat_w[frame, self.anchor_body_idx]
+    motion_anchor_quat_w = motion["body_quat_w"][frame, self.anchor_body_idx]
     ref_quat_corrected = quat_multiply(self.init_quat, motion_anchor_quat_w)
     rel_quat = quat_multiply(quat_conjugate(self.anchor_quat), ref_quat_corrected)
     anchor_ori_b = quat_to_rot6d(rel_quat)
@@ -344,7 +354,9 @@ class ControlNode(Node):
 
     # on the first control tick, align motion frame 0 with the robot's current yaw
     if not self.init_quat_captured:
-      motion_anchor_quat_0 = self.motion_body_quat_w[0, self.anchor_body_idx]
+      motion_anchor_quat_0 = self.motions[self.motion_idx]["body_quat_w"][
+        0, self.anchor_body_idx
+      ]
       self.init_quat = quat_multiply(
         yaw_quat(self.anchor_quat),
         quat_conjugate(yaw_quat(motion_anchor_quat_0)),

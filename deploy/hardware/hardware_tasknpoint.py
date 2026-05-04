@@ -29,7 +29,13 @@ ROOT_DIR = os.getenv("DEPLOY_ROOT_DIR")
 sys.path.append(ROOT_DIR)
 
 # custom imports
-from utils.math_utils import quat_to_rotation_matrix
+from utils.math_utils import (
+  quat_to_rotation_matrix,
+  quat_conjugate,
+  quat_multiply,
+  rpy_to_quat,
+  quat_to_rpy,
+)
 
 # Unitree SDK imports
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelFactoryInitialize
@@ -165,12 +171,14 @@ class ControlNode(Node):
 
     # motion frame from control node
     self.motion_frame = 0
+    self.motion_idx = 0
 
     # goal targets (initialized lazily on first valid perception pose)
     self._goals_initialized = False
-    self._goal_types: list = []
-    self._goal_pos_w: list = []
-    self._goal_vel_w: list = []
+    self._goal_types = []
+    self._goal_pos_w = []
+    self._goal_vel_w = []
+    self._goal_quat_w = []
 
     # other stuff from unitree's example
     self.time_ = 0.0
@@ -204,11 +212,15 @@ class ControlNode(Node):
     self.default_joint_pos = self.config["default_joint_pos"]  # list
 
     # motion and contact params
-    self.contact_phase = float(self.config["contact_phase"])
+    contact_phase_cfg = self.config["contact_phase"]
+    self.contact_phases = (
+      contact_phase_cfg if isinstance(contact_phase_cfg, list) else [contact_phase_cfg]
+    )
     self.contact_duration = float(self.config["contact_duration"])
-    motion_path_full = ROOT_DIR + "/motions/" + self.config["motion_path"]
-    motion = np.load(motion_path_full)
-    self.motion_num_frames = int(motion["joint_pos"].shape[0])
+    self.motion_num_frames = [
+      int(np.load(ROOT_DIR + "/motions/" + mp)["joint_pos"].shape[0])
+      for mp in self.config["motion_paths"]
+    ]
 
     # PD gains
     self.Kp = self.config["Kp"]  # list
@@ -247,22 +259,22 @@ class ControlNode(Node):
     goals_cfg = self.config.get("goals", [])
     R_init = quat_to_rotation_matrix(pelvis_quat)
 
-    self._goal_types = []
-    self._goal_pos_w = []
-    self._goal_vel_w = []
-
-    for goal in goals_cfg:
+    for goal in [goal for goal in goals_cfg if goal["motion_index"] == self.motion_idx]:
       vec = np.array(goal["vector"], dtype=np.float32)
       goal_type = goal["type"]
       self._goal_types.append(goal_type)
       if goal_type == "position":
         self._goal_pos_w.append(R_init @ vec + pelvis_pos)
         self._goal_vel_w.append(np.zeros(3, dtype=np.float32))
+        self._goal_quat_w.append(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
       elif goal_type == "velocity":
         self._goal_pos_w.append(np.zeros(3, dtype=np.float32))
         self._goal_vel_w.append(vec)
-      else:
-        raise ValueError(f"Unsupported goal type: {goal_type!r}")
+        self._goal_quat_w.append(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
+      elif goal_type == "orientation":
+        self._goal_pos_w.append(np.zeros(3, dtype=np.float32))
+        self._goal_vel_w.append(np.zeros(3, dtype=np.float32))
+        self._goal_quat_w.append(quat_multiply(pelvis_quat, rpy_to_quat(vec)))
 
     self._goals_initialized = True
     print(f"Goals initialized: {[g['name'] for g in goals_cfg]}")
@@ -471,24 +483,24 @@ class ControlNode(Node):
         self.init_goals(pelvis_pos, pelvis_quat)
       R = quat_to_rotation_matrix(pelvis_quat)
       contact_end_frame = int(
-        self.motion_num_frames * (self.contact_phase + self.contact_duration)
+        self.motion_num_frames[self.motion_idx]
+        * (self.contact_phases[self.motion_idx] + self.contact_duration)
       )
       goal_vecs = []
       for goal_type, goal_pos_w, vel_w in zip(
         self._goal_types, self._goal_pos_w, self._goal_vel_w
       ):
-        if (
-          goal_type == "position"
-        ):  # TODO this doesn't work with fk goals, just ball position goals
+        if goal_type == "position":
           if self.motion_frame == 0 or self.motion_frame > contact_end_frame:
             pos_w = goal_pos_w
           else:
             pos_w = np.array(ball_pos_w, dtype=np.float32)
           goal_vecs.append(R.T @ (pos_w - pelvis_pos))
-        else:  # velocity
+        elif goal_type == "velocity":  # velocity
           goal_vecs.append(vel_w)
-      if len(goal_vecs) == len(self._goal_types):
-        goals_msg.data = np.concatenate(goal_vecs).tolist()
+        elif goal_type == "orientation":  # orientation
+          goal_vecs.append(quat_to_rpy(self._goal_quat_w[-1]))
+      goals_msg.data = np.concatenate(goal_vecs).tolist()
     # publish to ROS2 topics
     self.pelvis_imu_state_pub.publish(pelvis_imu_msg)
     self.torso_imu_state_pub.publish(torso_imu_msg)
