@@ -5,8 +5,11 @@ xml_path: "g1_29dof_tasknpoint.xml"
 # motion_path: "walk1_subject1.npz"
 # policy_path: "g1_29dof_mimic_squat.onnx"
 # motion_path: "srb_squat.npz"
-policy_path: "forehand_orientation.onnx"
-motion_paths: ["forehand.npz"]
+# policy_path: "forehand_orientation.onnx"
+
+policy_path: "forehand_backhand.onnx"
+motion_paths: ["forehand.npz", "backhand.npz"]
+
 
 # interpolate to default position duration
 home_pos_duration: 3.0  # [sec]
@@ -40,19 +43,31 @@ action_scale: [0.548, 0.351, 0.548, 0.351, 0.439, 0.439,
                0.439, 0.439, 0.439, 0.439, 0.439, 0.075, 0.075]
 
 control_dt: 0.02
-contact_phase: 0.345
+contact_phase: [0.345, 0.345]
 contact_duration: 0.3
 
 goals:
-  - name: "right_hand_target"
+  - name: "forehand_position"
     type: "position"
     vector: [0.5, -0.7, 0.0]
     motion_index: 0
-  - name: "right_hand_target_vel"
+  - name: "forehand_velocity"
     type: "velocity"
     vector: [1.0, 0.0, 0.1]
     motion_index: 0
-  - name: "right_hand_target_ori"
+  - name: "forehand_orientation"
     type: "orientation"
     vector: [0.39, 0.0, -1.57]       # target_orientation_mean={"roll": np.pi/8, "pitch": 0.0, "yaw": -np.pi / 2},
     motion_index: 0
+  - name: "backhand_position"
+    type: "position"
+    vector: [0.5, 0.6, 0.0]
+    motion_index: 1
+  - name: "backhand_velocity"
+    type: "velocity"
+    vector: [1.0, 0.0, 0.1]
+    motion_index: 1
+  - name: "backhand_orientation"
+    type: "orientation"
+    vector: [-0.39, 0.0, 1.57]       # target_orientation_mean={"roll": np.pi/8, "pitch": 0.0, "yaw": -np.pi / 2},
+    motion_index: 1

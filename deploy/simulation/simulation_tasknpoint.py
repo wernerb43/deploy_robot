@@ -64,6 +64,8 @@ class SimulationNode(Node):
     self.init_simulation()
 
     # compute world-frame goal targets anchored to the robot's initial pose
+
+    self.motion_idx = 0
     self.init_goals()
 
     # ROS publishers
@@ -80,6 +82,9 @@ class SimulationNode(Node):
       Float64, "deploy_robot/simulation_time", 10
     )
     self.goal_pub = self.create_publisher(Float32MultiArray, "deploy_robot/goals", 10)
+    self.which_motion_pub = self.create_publisher(
+      Float64, "deploy_robot/which_motion", 10
+    )
 
     # ROS subscribers
     self.command_sub = self.create_subscription(
@@ -87,6 +92,9 @@ class SimulationNode(Node):
     )
     self.motion_frame_sub = self.create_subscription(
       Float64, "deploy_robot/motion_frame", self.motion_frame_callback, 10
+    )
+    self.motion_index_sub = self.create_subscription(
+      Float32MultiArray, "deploy_robot/joystick", self.motion_index_callback, 10
     )
 
     # initial command state
@@ -217,8 +225,7 @@ class SimulationNode(Node):
     self._goal_pos_w: list[np.ndarray] = []  # world-frame position targets
     self._goal_vel_w: list[np.ndarray] = []  # world-frame velocity targets
     self._goal_quat_w: list[np.ndarray] = []  # world-frame quaternion [w,x,y,z] targets
-
-    for goal in goals_cfg:
+    for goal in [goal for goal in goals_cfg if goal["motion_index"] == self.motion_idx]:
       vec = np.array(goal["vector"], dtype=np.float32)
       goal_type = goal["type"]
       self._goal_types.append(goal_type)
@@ -241,7 +248,10 @@ class SimulationNode(Node):
       else:
         raise ValueError(f"Unsupported goal type: {goal_type!r}")
 
-    print(f"Goals initialized: {[g['name'] for g in goals_cfg]}")
+    motion_goal_names = [
+      g["name"] for g in goals_cfg if g["motion_index"] == self.motion_idx
+    ]
+    print(f"Goals initialized for motion {self.motion_idx}: {motion_goal_names}")
 
   #################################################################
   # PUBLISHING AND CALLBACKS
@@ -262,6 +272,13 @@ class SimulationNode(Node):
   # motion frame callback
   def motion_frame_callback(self, msg):
     self.motion_frame = int(msg.data)
+
+  # motion index callback
+  def motion_index_callback(self, msg):
+    new_idx = 0 if msg.data[2] > 0.0 else 0
+    if new_idx != self.motion_idx:
+      self.motion_idx = new_idx
+      self.init_goals()
 
   # publish pelvis IMU: [rpy(3), quat(4), gyro(3), acc(3)]
   def publish_pelvis_imu(self):
@@ -311,6 +328,10 @@ class SimulationNode(Node):
 
   # publish goal positions, orientations, and velocities according to the yaml config
   def publish_goals(self):
+    which_motion_msg = Float64()
+    which_motion_msg.data = float(self.motion_idx)
+    self.which_motion_pub.publish(which_motion_msg)
+
     if not self._goal_types:
       return
 
@@ -333,7 +354,6 @@ class SimulationNode(Node):
       elif goal_type == "orientation":
         # 4-value quaternion in anchor frame: quat_inv(anchor) * target_ori_w
         goal_vecs.append(quat_multiply(pelvis_quat_inv, quat_w))
-
     goal_msg = Float32MultiArray()
     goal_msg.data = np.concatenate(goal_vecs).tolist()
     self.goal_pub.publish(goal_msg)

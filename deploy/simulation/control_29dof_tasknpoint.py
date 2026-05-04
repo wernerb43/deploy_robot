@@ -85,6 +85,9 @@ class ControlNode(Node):
     self.motion_trigger_sub = self.create_subscription(
       Float32MultiArray, "deploy_robot/joystick", self.motion_trigger_callback, 10
     )
+    self.which_motion_sub = self.create_subscription(
+      Float64, "deploy_robot/which_motion", self.which_motion_callback, 10
+    )
 
     # control timer to run the policy at a fixed frequency
     self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
@@ -103,12 +106,10 @@ class ControlNode(Node):
     # initialize the action
     self.action = np.zeros(self.act_size)
     self.action_triggered = False
+    self.motion_idx = 0
 
     # initialize goal targets (flat vector, sized from config goals block)
-    goal_dim = sum(
-      4 if g["type"] == "orientation" else len(g["vector"])
-      for g in self.config.get("goals", [])
-    )
+    goal_dim = 10  # NOTE this is hardcoded for now, but should be set from config?
     self.goal_targets = np.zeros(goal_dim, dtype=np.float32)
 
     # yaw alignment between robot-at-policy-start and motion frame 0 (identity until captured on first tick)
@@ -165,18 +166,22 @@ class ControlNode(Node):
     print(f"    Control frequency: {1.0 / self.ctrl_dt} Hz")
 
     # load motion reference data
-    motion_path = ROOT_DIR + "/motions/" + self.config["motion_path"]
-    motion = np.load(motion_path)
-    self.motion_fps = float(motion["fps"])
-    self.motion_joint_pos = motion["joint_pos"].astype(np.float32)
-    self.motion_joint_vel = motion["joint_vel"].astype(np.float32)
-    self.motion_body_quat_w = motion["body_quat_w"].astype(np.float32)
-    self.motion_num_frames = self.motion_joint_pos.shape[0]
-
-    print(f"Loaded motion from [{motion_path}].")
-    print(f"    FPS: {self.motion_fps}")
-    print(f"    Frames: {self.motion_num_frames}")
-    print(f"    Duration: {self.motion_num_frames / self.motion_fps:.1f}s")
+    self.motions = []
+    for mp in self.config["motion_paths"]:
+      path = ROOT_DIR + "/motions/" + mp
+      m = np.load(path)
+      entry = {
+        "fps": float(m["fps"]),
+        "joint_pos": m["joint_pos"].astype(np.float32),
+        "joint_vel": m["joint_vel"].astype(np.float32),
+        "body_quat_w": m["body_quat_w"].astype(np.float32),
+        "num_frames": m["joint_pos"].shape[0],
+      }
+      self.motions.append(entry)
+      print(f"Loaded motion from [{path}].")
+      print(f"    FPS: {entry['fps']}")
+      print(f"    Frames: {entry['num_frames']}")
+      print(f"    Duration: {entry['num_frames'] / entry['fps']:.1f}s")
 
     # find anchor body index against robot's full body list
     anchor_name = self.policy.metadata["anchor_body_name"]
@@ -236,6 +241,9 @@ class ControlNode(Node):
       self.action_triggered = True
       self.policy_start_time = self.sim_time
 
+  def which_motion_callback(self, msg):
+    self.motion_idx = int(msg.data)
+
   #################################################################
   # OBSERVATION
   #################################################################
@@ -243,16 +251,18 @@ class ControlNode(Node):
   # build the observation vector for the policy
   # ['command', 'motion_anchor_ori_b', 'base_ang_vel', 'joint_pos', 'joint_vel', 'actions']
   def build_observation(self):
+    motion = self.motions[self.motion_idx]
+
     # motion frame: 1 frame per control_dt, matching training (time_steps += 1 per step_dt)
     if self.action_triggered:
       elapsed = self.sim_time - self.policy_start_time
       frame = int(elapsed / self.ctrl_dt)
-      if frame == self.motion_num_frames - 1:
+      if frame == motion["num_frames"] - 1:
         self.action_triggered = False
     else:
       frame = 0
 
-    # publish the current motion frame
+    # publish the current motion frame and index
     frame_msg = Float64()
     frame_msg.data = float(frame)
     self.motion_frame_pub.publish(frame_msg)
@@ -260,15 +270,15 @@ class ControlNode(Node):
     # --- command (58) : motion reference joint_pos + joint_vel ---
     command = np.concatenate(
       [
-        self.motion_joint_pos[frame],
-        self.motion_joint_vel[frame],
+        motion["joint_pos"][frame],
+        motion["joint_vel"][frame],
         self.goal_targets,
       ]
     )
 
     # --- motion_anchor_ori_b (6) : desired anchor orientation in base frame (6D rotation) ---
     # apply the captured yaw offset so the motion is replayed in the robot's initial heading
-    motion_anchor_quat_w = self.motion_body_quat_w[frame, self.anchor_body_idx]
+    motion_anchor_quat_w = motion["body_quat_w"][frame, self.anchor_body_idx]
     ref_quat_corrected = quat_multiply(self.init_quat, motion_anchor_quat_w)
     rel_quat = quat_multiply(quat_conjugate(self.anchor_quat), ref_quat_corrected)
     anchor_ori_b = quat_to_rot6d(rel_quat)
@@ -306,7 +316,9 @@ class ControlNode(Node):
     # on the first tick, align motion frame 0 with the robot's current yaw
     if self.policy_start_time is None:
       self.policy_start_time = self.sim_time
-      motion_anchor_quat_0 = self.motion_body_quat_w[0, self.anchor_body_idx]
+      motion_anchor_quat_0 = self.motions[self.motion_idx]["body_quat_w"][
+        0, self.anchor_body_idx
+      ]
       self.init_quat = quat_multiply(
         yaw_quat(self.anchor_quat),
         quat_conjugate(yaw_quat(motion_anchor_quat_0)),
