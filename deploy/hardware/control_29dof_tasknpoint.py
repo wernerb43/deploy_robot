@@ -91,6 +91,9 @@ class ControlNode(Node):
     self.motion_trigger_sub = self.create_subscription(
       Float32MultiArray, "deploy_robot/joystick", self.motion_trigger_callback, 10
     )
+    self.which_motion_sub = self.create_subscription(
+      Float64, "deploy_robot/which_motion", self.which_motion_callback, 10
+    )
 
     self.target_time_sub = self.create_subscription(
       Float64, "ball/target_time", self.target_time_callback, 10
@@ -117,8 +120,12 @@ class ControlNode(Node):
     self.target_time = -1.0
     self.motion_idx = 0
 
-    # initialize goal targets (flat vector, sized from config goals block)
-    goal_dim = sum(len(g["vector"]) for g in self.config.get("goals", []))
+    # initialize goal targets — orientation is published as a quaternion (4) not the raw 3-vec
+    goal_dim = sum(
+      4 if g["type"] == "orientation" else len(g["vector"])
+      for g in self.config.get("goals", [])
+      if g["motion_index"] == 0
+    )
     self.goal_targets = np.zeros(goal_dim, dtype=np.float32)
 
     # yaw alignment between robot-at-policy-start and motion frame 0 (re-captured each time FSM enters "control")
@@ -265,6 +272,10 @@ class ControlNode(Node):
       self.action_triggered = True
       self.policy_start_time = self.fsm_time
 
+  def which_motion_callback(self, msg: Float64):
+    if not self.action_triggered: #don't want to switch motions in the middle of an execution
+      self.motion_idx = int(msg.data)
+
   # ball target time callback
   def target_time_callback(self, msg: Float64):
     self.target_time = msg.data
@@ -294,7 +305,7 @@ class ControlNode(Node):
         self.action_triggered = False
     else:
       frame = 0
-    print("frame: ", frame)
+    # print("frame: ", frame)
     # publish the motion frame
     frame_msg = Float64()
     frame_msg.data = float(frame)

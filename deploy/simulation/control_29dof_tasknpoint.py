@@ -242,7 +242,8 @@ class ControlNode(Node):
       self.policy_start_time = self.sim_time
 
   def which_motion_callback(self, msg):
-    self.motion_idx = int(msg.data)
+    if not self.action_triggered:
+      self.motion_idx = int(msg.data)
 
   #################################################################
   # OBSERVATION

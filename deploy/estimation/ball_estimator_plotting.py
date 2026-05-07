@@ -124,7 +124,6 @@ def main():
 
     if pelvis is not None:
       ax.scatter(*pelvis, c="orange", s=120, marker="s", label="Pelvis", zorder=5)
-
     if target is not None:
       ax.scatter(*target, c="red", s=150, marker="*", label="Target", zorder=5)
 

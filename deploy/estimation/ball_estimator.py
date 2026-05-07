@@ -65,7 +65,7 @@ class BallEstimatorNode(Node):
       config = yaml.safe_load(f)
     goals = {g["name"]: g for g in config["goals"]}
     self.nominal_target_pos_pelvis = np.array(
-      goals["right_hand_target"]["vector"], dtype=np.float64
+      goals["forehand_position"]["vector"], dtype=np.float64
     )
     self.nominal_target_pos = np.zeros(3, dtype=np.float64)
 
