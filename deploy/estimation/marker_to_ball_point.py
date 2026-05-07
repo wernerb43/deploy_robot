@@ -69,7 +69,7 @@ class BallTracker(Node):
       if self._is_robot_marker(p):
         continue
     #   print(f"Ball detected at ({p.x:.2f}, {p.y:.2f}, {p.z:.2f})")
-      z = np.array([p.x, p.y, p.z], dtype=np.float64)
+      z = np.array([p.x, p.y, p.z], dtype=np.float64) # either the ball point or another spurious one
 
       if not self.kf_initialized:
         self.kf_state[:3] = z
@@ -115,20 +115,25 @@ class BallTracker(Node):
 
     F = np.eye(6, dtype=np.float64)
     F[0, 3] = F[1, 4] = F[2, 5] = dt
-    u = np.array([0.0, 0.0, -0.5 * GRAVITY * dt**2, 0.0, 0.0, -GRAVITY * dt])
+    # u = np.array([0.0, 0.0, -0.5 * GRAVITY * dt**2, 0.0, 0.0, -GRAVITY * dt])
+    u = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # no control input during update step
     x_pred = F @ self.kf_state + u
     P_pred = F @ self.kf_P @ F.T + self.kf_Q
 
     innov = z - self.H @ x_pred
     S = self.H @ P_pred @ self.H.T + self.kf_R
 
-    if float(innov @ np.linalg.inv(S) @ innov) <= MAHALANOBIS_GATE:
-      K = P_pred @ self.H.T @ np.linalg.inv(S)
-      self.kf_state = x_pred + K @ innov
-      self.kf_P = (np.eye(6) - K @ self.H) @ P_pred
-    else:
-      self.kf_state = x_pred
-      self.kf_P = P_pred
+    K = P_pred @ self.H.T @ np.linalg.inv(S)
+    self.kf_state = x_pred + K @ innov
+    self.kf_P = (np.eye(6) - K @ self.H) @ P_pred 
+
+    # if float(innov @ np.linalg.inv(S) @ innov) <= MAHALANOBIS_GATE:
+    #   K = P_pred @ self.H.T @ np.linalg.inv(S)
+    #   self.kf_state = x_pred + K @ innov
+    #   self.kf_P = (np.eye(6) - K @ self.H) @ P_pred
+    # else:
+    #   self.kf_state = x_pred
+    #   self.kf_P = P_pred
 
   def _publish_estimate(self, stamp):
     out = PoseStamped()
