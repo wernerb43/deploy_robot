@@ -66,13 +66,6 @@ class ControlNode(Node):
     self.pelvis_imu_sub = self.create_subscription(
       Float32MultiArray, "deploy_robot/pelvis_imu_state", self.pelvis_imu_callback, 10
     )
-    if self.anchor != "pelvis":
-      self.anchor_imu_sub = self.create_subscription(
-        Float32MultiArray,
-        f"deploy_robot/{self.anchor}_imu_state",
-        self.anchor_imu_callback,
-        10,
-      )
     self.joint_sensor_sub = self.create_subscription(
       Float32MultiArray, "deploy_robot/joint_state", self.joint_sensor_callback, 10
     )
@@ -207,10 +200,9 @@ class ControlNode(Node):
   # CALLBACKS
   #################################################################
 
-  # anchor IMU: [rpy(3), quat(4), gyro(3), acc(3)] — orientation when anchor != pelvis
-  def anchor_imu_callback(self, msg):
-    data = np.array(msg.data, dtype=np.float32)
-    self.anchor_quat = data[3:7]
+  # hardware time
+  def time_callback(self, msg):
+    self.sim_time = msg.data
 
   # pelvis IMU: [rpy(3), quat(4), gyro(3), acc(3)] — base_ang_vel plus anchor_quat when anchor = pelvis
   def pelvis_imu_callback(self, msg):
@@ -225,10 +217,6 @@ class ControlNode(Node):
     n = len(self.qpos_joints_default)
     self.qpos_joints = data[:n]
     self.qvel_joints = data[n : 2 * n]
-
-  # hardware time
-  def time_callback(self, msg):
-    self.sim_time = msg.data
 
   # goal callback
   def goal_callback(self, msg):

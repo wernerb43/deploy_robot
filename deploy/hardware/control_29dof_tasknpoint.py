@@ -67,13 +67,6 @@ class ControlNode(Node):
     self.pelvis_imu_sub = self.create_subscription(
       Float32MultiArray, "deploy_robot/pelvis_imu_state", self.pelvis_imu_callback, 10
     )
-    if self.anchor != "pelvis":
-      self.anchor_imu_sub = self.create_subscription(
-        Float32MultiArray,
-        f"deploy_robot/{self.anchor}_imu_state",
-        self.anchor_imu_callback,
-        10,
-      )
     self.joint_sensor_sub = self.create_subscription(
       Float32MultiArray, "deploy_robot/joint_state", self.joint_sensor_callback, 10
     )
@@ -94,11 +87,6 @@ class ControlNode(Node):
     self.which_motion_sub = self.create_subscription(
       Float64, "deploy_robot/which_motion", self.which_motion_callback, 10
     )
-
-    self.target_time_sub = self.create_subscription(
-      Float64, "ball/target_time", self.target_time_callback, 10
-    )
-
     # control timer to run the policy at a fixed frequency
     self.control_timer = self.create_timer(self.ctrl_dt, self.control_callback)
 
@@ -121,11 +109,7 @@ class ControlNode(Node):
     self.motion_idx = 0
 
     # initialize goal targets — orientation is published as a quaternion (4) not the raw 3-vec
-    goal_dim = sum(
-      4 if g["type"] == "orientation" else len(g["vector"])
-      for g in self.config.get("goals", [])
-      if g["motion_index"] == 0
-    )
+    goal_dim = 10  # TODO this is hardcoded for now but should be set from config?
     self.goal_targets = np.zeros(goal_dim, dtype=np.float32)
 
     # yaw alignment between robot-at-policy-start and motion frame 0 (re-captured each time FSM enters "control")
@@ -243,11 +227,6 @@ class ControlNode(Node):
     else:
       self.fsm_time = 0.0
 
-  # anchor IMU: [rpy(3), quat(4), gyro(3), acc(3)] — orientation when anchor != pelvis
-  def anchor_imu_callback(self, msg):
-    data = np.array(msg.data, dtype=np.float32)
-    self.anchor_quat = data[3:7]
-
   # pelvis IMU: [rpy(3), quat(4), gyro(3), acc(3)] — base_ang_vel plus anchor_quat when anchor = pelvis
   def pelvis_imu_callback(self, msg):
     data = np.array(msg.data, dtype=np.float32)
@@ -265,6 +244,7 @@ class ControlNode(Node):
   # goal callback
   def goal_callback(self, msg):
     self.goal_targets = np.array(msg.data, dtype=np.float32)
+    print(f"Received new goal targets: {self.goal_targets}")
 
   # motion trigger callback
   def motion_trigger_callback(self, msg):
@@ -273,19 +253,8 @@ class ControlNode(Node):
       self.policy_start_time = self.fsm_time
 
   def which_motion_callback(self, msg: Float64):
-    if not self.action_triggered: #don't want to switch motions in the middle of an execution
+    if not self.action_triggered:
       self.motion_idx = int(msg.data)
-
-  # ball target time callback
-  def target_time_callback(self, msg: Float64):
-    self.target_time = msg.data
-    ttc = self.time_to_contact[self.motion_idx]
-    if not self.action_triggered and 0.0 < self.target_time <= ttc:
-      print(
-        f"Auto-trigger: target_time={self.target_time:.3f}s <= time_to_contact={ttc:.3f}s"
-      )
-      self.action_triggered = True
-      self.policy_start_time = self.fsm_time
 
   #################################################################
   # OBSERVATION
@@ -305,7 +274,7 @@ class ControlNode(Node):
         self.action_triggered = False
     else:
       frame = 0
-    # print("frame: ", frame)
+
     # publish the motion frame
     frame_msg = Float64()
     frame_msg.data = float(frame)
@@ -338,16 +307,7 @@ class ControlNode(Node):
 
     # --- actions (29) : previous action ---
     # concatenate: 58 + 6 + 3 + 29 + 29 + 29 = 154
-    obs = np.concatenate(
-      [
-        command,
-        anchor_ori_b,
-        base_ang_vel_b,
-        qj,
-        dqj,
-        self.action,
-      ]
-    ).astype(np.float32)
+    obs = np.concatenate([command, anchor_ori_b,base_ang_vel_b, qj, dqj, self.action]).astype(np.float32)
 
     return obs, frame
 

@@ -34,7 +34,6 @@ from utils.math_utils import (
   quat_conjugate,
   quat_multiply,
   rpy_to_quat,
-  quat_to_rpy,
 )
 
 # Unitree SDK imports
@@ -131,10 +130,6 @@ class ControlNode(Node):
     self.pelvis_imu_quaternion = None  # orientation
     self.pelvis_imu_gyroscope = None  # angular velocity
     self.pelvis_imu_accelerometer = None  # linear acceleration
-    self.torso_imu_rpy = None
-    self.torso_imu_quaternion = None
-    self.torso_imu_gyroscope = None
-    self.torso_imu_accelerometer = None
 
     # Joint states
     self.q = np.zeros(G1_NUM_MOTOR)  # joint positions
@@ -165,20 +160,17 @@ class ControlNode(Node):
     self.safety_triggered = False
 
     # perception: pelvis and ball poses from external system
-    self.pelvis_pose_position = None
-    self.pelvis_pose_quaternion = None
-    self.ball_pose_position = None
+    self.pelvis_pose_position = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+    self.pelvis_pose_quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    self.ball_pose_position = np.array([0.0, 0.0, 0.0], dtype=np.float64)
 
     # motion frame from control node
     self.motion_frame = 0
     self.motion_idx = 0
 
-    # goal targets (initialized lazily on first valid perception pose)
-    self._goals_initialized = False
-    self._goal_types = []
-    self._goal_pos_w = []
-    self._goal_vel_w = []
-    self._goal_quat_w = []
+    # goal targets per motion index, initialized lazily on first valid perception pose
+    # {motion_idx: {"types": [...], "pos_w": [...], "vel_w": [...], "quat_w": [...]}}
+    self._goals: dict = {}
 
     # other stuff from unitree's example
     self.time_ = 0.0
@@ -259,25 +251,34 @@ class ControlNode(Node):
     goals_cfg = self.config.get("goals", [])
     R_init = quat_to_rotation_matrix(pelvis_quat)
 
-    for goal in [goal for goal in goals_cfg if goal["motion_index"] == self.motion_idx]:
+    types, pos_w, vel_w, quat_w = [], [], [], []
+    for goal in goals_cfg:
+      if goal["motion_index"] != self.motion_idx:
+        continue
       vec = np.array(goal["vector"], dtype=np.float32)
       goal_type = goal["type"]
-      self._goal_types.append(goal_type)
+      types.append(goal_type)
       if goal_type == "position":
-        self._goal_pos_w.append(R_init @ vec + pelvis_pos)
-        self._goal_vel_w.append(np.zeros(3, dtype=np.float32))
-        self._goal_quat_w.append(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
+        pos_w.append(R_init @ vec + pelvis_pos)
+        vel_w.append(np.zeros(3, dtype=np.float32))
+        quat_w.append(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
       elif goal_type == "velocity":
-        self._goal_pos_w.append(np.zeros(3, dtype=np.float32))
-        self._goal_vel_w.append(vec)
-        self._goal_quat_w.append(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
+        pos_w.append(np.zeros(3, dtype=np.float32))
+        vel_w.append(vec)
+        quat_w.append(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
       elif goal_type == "orientation":
-        self._goal_pos_w.append(np.zeros(3, dtype=np.float32))
-        self._goal_vel_w.append(np.zeros(3, dtype=np.float32))
-        self._goal_quat_w.append(quat_multiply(pelvis_quat, rpy_to_quat(vec)))
+        pos_w.append(np.zeros(3, dtype=np.float32))
+        vel_w.append(np.zeros(3, dtype=np.float32))
+        quat_w.append(quat_multiply(pelvis_quat, rpy_to_quat(vec)))
 
-    self._goals_initialized = True
-    print(f"Goals initialized: {[g['name'] for g in goals_cfg]}")
+    self._goals[self.motion_idx] = {
+      "types": types,
+      "pos_w": pos_w,
+      "vel_w": vel_w,
+      "quat_w": quat_w,
+    }
+    names = [g["name"] for g in goals_cfg if g["motion_index"] == self.motion_idx]
+    print(f"Goals initialized for motion {self.motion_idx}: {names}")
 
   # initialize the motion switcher client, publishers, and subscribers
   def Init(self):
@@ -300,37 +301,41 @@ class ControlNode(Node):
     # create subscribers
     self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_)
     self.lowstate_subscriber.Init(self.LowStateHandler, 10)
-    self.torso_imu_subscriber = ChannelSubscriber("rt/secondary_imu", IMUState_)
-    self.torso_imu_subscriber.Init(self.TorsoIMUHandler, 10)
 
     print("Unitree SDK publishers and subscribers initialized successfully.")
 
     # ROS2 publishers
-    self.hardware_time_pub = self.create_publisher(
-      Float64, "deploy_robot/hardware_time", 10
-    )
-    self.fsm_time_pub = self.create_publisher(Float64, "deploy_robot/fsm_time", 10)
-    self.joint_state_pub = self.create_publisher(
-      Float32MultiArray, "deploy_robot/joint_state", 10
-    )
     self.pelvis_imu_state_pub = self.create_publisher(
       Float32MultiArray, "deploy_robot/pelvis_imu_state", 10
     )
-    self.torso_imu_state_pub = self.create_publisher(
-      Float32MultiArray, "deploy_robot/torso_imu_state", 10
+    self.joint_state_pub = self.create_publisher(
+      Float32MultiArray, "deploy_robot/joint_state", 10
+    )
+    self.hardware_time_pub = self.create_publisher(
+      Float64, "deploy_robot/hardware_time", 10
+    )
+    self.goals_pub = self.create_publisher(Float32MultiArray, "deploy_robot/goals", 10)
+    self.which_motion_pub = self.create_publisher(
+      Float64, "deploy_robot/which_motion", 10
     )
 
-    self.goals_pub = self.create_publisher(Float32MultiArray, "deploy_robot/goals", 10)
+    # Hardware specific publishers
+    self.fsm_time_pub = self.create_publisher(Float64, "deploy_robot/fsm_time", 10)
 
     # ROS2 subscribers
     self.command_sub = self.create_subscription(
       Float32MultiArray, "deploy_robot/command", self.command_callback, 10
     )
-    self.fsm_sub = self.create_subscription(
-      String, "deploy_robot/fsm", self.fsm_callback, 10
-    )
     self.motion_frame_sub = self.create_subscription(
       Float64, "deploy_robot/motion_frame", self.motion_frame_callback, 10
+    )
+    self.which_motion_sub = self.create_subscription(
+      Float32MultiArray, "deploy_robot/joystick", self.which_motion_callback, 10
+    )
+
+    # Hardware specific subscribers
+    self.fsm_sub = self.create_subscription(
+      String, "deploy_robot/fsm", self.fsm_callback, 10
     )
 
     # Perception subscribers (all world frame)
@@ -396,6 +401,13 @@ class ControlNode(Node):
   def motion_frame_callback(self, msg: Float64):
     self.motion_frame = int(msg.data)
 
+  # which motion callback
+  def which_motion_callback(self, msg):
+    new_idx = 1 if msg.data[2] > 0.0 else 0
+    if new_idx != self.motion_idx:
+      self.motion_idx = new_idx
+      self.init_goals(self.pelvis_pose_position, self.pelvis_pose_quaternion)
+
   # publish sensor data to ROS2 topics
   def publish_sensor_data(self):
     # read sensor data under lock
@@ -421,27 +433,7 @@ class ControlNode(Node):
         if self.pelvis_imu_accelerometer is not None
         else np.zeros(3)
       )
-      # torso IMU state
-      torso_imu_rpy = (
-        np.array(self.torso_imu_rpy, dtype=np.float64)
-        if self.torso_imu_rpy is not None
-        else np.zeros(3)
-      )
-      torso_imu_quat = (
-        np.array(self.torso_imu_quaternion, dtype=np.float64)
-        if self.torso_imu_quaternion is not None
-        else np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-      )
-      torso_imu_gyro = (
-        np.array(self.torso_imu_gyroscope, dtype=np.float64)
-        if self.torso_imu_gyroscope is not None
-        else np.zeros(3)
-      )
-      torso_imu_accel = (
-        np.array(self.torso_imu_accelerometer, dtype=np.float64)
-        if self.torso_imu_accelerometer is not None
-        else np.zeros(3)
-      )
+
       # joint state
       q = self.q.copy()
       dq = self.dq.copy()
@@ -452,10 +444,6 @@ class ControlNode(Node):
     pelvis_imu_msg = Float32MultiArray()
     pelvis_imu_msg.data = np.concatenate(
       [pelvis_imu_rpy, pelvis_imu_quat, pelvis_imu_gyro, pelvis_imu_accel]
-    ).tolist()
-    torso_imu_msg = Float32MultiArray()
-    torso_imu_msg.data = np.concatenate(
-      [torso_imu_rpy, torso_imu_quat, torso_imu_gyro, torso_imu_accel]
     ).tolist()
 
     # joint_state: [q(29), dq(29), ddq(29), tau_est(29)] = 116 floats
@@ -469,45 +457,41 @@ class ControlNode(Node):
     # fsm_time: time since entering current state
     fsm_time_msg = Float64()
     fsm_time_msg.data = self.fsm_time
-
     # compute goals in anchor (pelvis) frame
     goals_msg = Float32MultiArray()
     with self.sensor_lock:
       pelvis_pos = self.pelvis_pose_position
       pelvis_quat = self.pelvis_pose_quaternion
-      ball_pos_w = self.ball_pose_position
     if pelvis_pos is not None and pelvis_quat is not None:
       pelvis_pos = np.array(pelvis_pos, dtype=np.float32)
       pelvis_quat = np.array(pelvis_quat, dtype=np.float32)
-      if not self._goals_initialized:
+      # if self.motion_idx not in self._goals:
+      if self.motion_frame == 0: 
         self.init_goals(pelvis_pos, pelvis_quat)
       R = quat_to_rotation_matrix(pelvis_quat)
-      contact_end_frame = int(
-        self.motion_num_frames[self.motion_idx]
-        * (self.contact_phases[self.motion_idx] + self.contact_duration)
-      )
+      pelvis_quat_inv = quat_conjugate(pelvis_quat)
+      g = self._goals[self.motion_idx]
       goal_vecs = []
-      for goal_type, goal_pos_w, vel_w in zip(
-        self._goal_types, self._goal_pos_w, self._goal_vel_w
+      for goal_type, goal_pos_w, vel_w, goal_quat_w in zip(
+        g["types"], g["pos_w"], g["vel_w"], g["quat_w"]
       ):
         if goal_type == "position":
-          if self.motion_frame == 0 or self.motion_frame > contact_end_frame:
-            pos_w = goal_pos_w
-          else:
-            pos_w = np.array(ball_pos_w, dtype=np.float32)
-          goal_vecs.append(R.T @ (pos_w - pelvis_pos))
-        elif goal_type == "velocity":  # velocity
+          goal_vecs.append(R.T @ (goal_pos_w - pelvis_pos))
+        elif goal_type == "velocity":
           goal_vecs.append(vel_w)
-        elif goal_type == "orientation":  # orientation
-          goal_vecs.append(quat_to_rpy(self._goal_quat_w[-1]))
+        elif goal_type == "orientation":
+          goal_vecs.append(quat_multiply(pelvis_quat_inv, goal_quat_w))
       goals_msg.data = np.concatenate(goal_vecs).tolist()
     # publish to ROS2 topics
+    which_motion_msg = Float64()
+    which_motion_msg.data = float(self.motion_idx)
+
     self.pelvis_imu_state_pub.publish(pelvis_imu_msg)
-    self.torso_imu_state_pub.publish(torso_imu_msg)
     self.joint_state_pub.publish(joint_msg)
     self.hardware_time_pub.publish(time_msg)
     self.fsm_time_pub.publish(fsm_time_msg)
     self.goals_pub.publish(goals_msg)
+    self.which_motion_pub.publish(which_motion_msg)
 
   #################################################################
   # SDK HARDWARE
@@ -535,14 +519,6 @@ class ControlNode(Node):
         self.dq[i] = self.low_state.motor_state[i].dq
         self.ddq[i] = self.low_state.motor_state[i].ddq
         self.tau_est[i] = self.low_state.motor_state[i].tau_est
-
-  # callback to receive torso IMU messages
-  def TorsoIMUHandler(self, msg: IMUState_):
-    with self.sensor_lock:
-      self.torso_imu_rpy = msg.rpy
-      self.torso_imu_quaternion = msg.quaternion
-      self.torso_imu_gyroscope = msg.gyroscope
-      self.torso_imu_accelerometer = msg.accelerometer
 
   # callback to receive pelvis pose messages from perception
   def pelvis_pose_callback(self, msg: PoseStamped):
