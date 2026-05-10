@@ -244,7 +244,6 @@ class ControlNode(Node):
   # goal callback
   def goal_callback(self, msg):
     self.goal_targets = np.array(msg.data, dtype=np.float32)
-    print(f"Received new goal targets: {self.goal_targets}")
 
   # motion trigger callback
   def motion_trigger_callback(self, msg):
@@ -307,7 +306,9 @@ class ControlNode(Node):
 
     # --- actions (29) : previous action ---
     # concatenate: 58 + 6 + 3 + 29 + 29 + 29 = 154
-    obs = np.concatenate([command, anchor_ori_b,base_ang_vel_b, qj, dqj, self.action]).astype(np.float32)
+    obs = np.concatenate(
+      [command, anchor_ori_b, base_ang_vel_b, qj, dqj, self.action]
+    ).astype(np.float32)
 
     return obs, frame
 

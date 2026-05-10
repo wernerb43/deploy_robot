@@ -56,7 +56,7 @@ class BallTracker(Node):
       dx = p.x - rmp[0]
       dy = p.y - rmp[1]
       dz = p.z - rmp[2]
-    #   print(f"Checking marker at ({p.x:.2f}, {p.y:.2f}, {p.z:.2f}) against robot marker at ({rmp[0]:.2f}, {rmp[1]:.2f}, {rmp[2]:.2f}), distance squared = {dx*dx + dy*dy + dz*dz:.4f}")
+      #   print(f"Checking marker at ({p.x:.2f}, {p.y:.2f}, {p.z:.2f}) against robot marker at ({rmp[0]:.2f}, {rmp[1]:.2f}, {rmp[2]:.2f}), distance squared = {dx*dx + dy*dy + dz*dz:.4f}")
       if (dx * dx + dy * dy + dz * dz) < ROBOT_MARKER_EXCL_RADIUS**2:
         # print(f"Excluding robot marker at ({p.x:.2f}, {p.y:.2f}, {p.z:.2f})")
         return True
@@ -68,8 +68,10 @@ class BallTracker(Node):
     for p in msg.points:
       if self._is_robot_marker(p):
         continue
-    #   print(f"Ball detected at ({p.x:.2f}, {p.y:.2f}, {p.z:.2f})")
-      z = np.array([p.x, p.y, p.z], dtype=np.float64) # either the ball point or another spurious one
+      #   print(f"Ball detected at ({p.x:.2f}, {p.y:.2f}, {p.z:.2f})")
+      z = np.array(
+        [p.x, p.y, p.z], dtype=np.float64
+      )  # either the ball point or another spurious one
 
       if not self.kf_initialized:
         self.kf_state[:3] = z
@@ -125,7 +127,7 @@ class BallTracker(Node):
 
     K = P_pred @ self.H.T @ np.linalg.inv(S)
     self.kf_state = x_pred + K @ innov
-    self.kf_P = (np.eye(6) - K @ self.H) @ P_pred 
+    self.kf_P = (np.eye(6) - K @ self.H) @ P_pred
 
     # if float(innov @ np.linalg.inv(S) @ innov) <= MAHALANOBIS_GATE:
     #   K = P_pred @ self.H.T @ np.linalg.inv(S)

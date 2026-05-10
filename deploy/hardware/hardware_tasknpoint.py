@@ -168,9 +168,13 @@ class ControlNode(Node):
     self.motion_frame = 0
     self.motion_idx = 0
 
-    # goal targets per motion index, initialized lazily on first valid perception pose
+    # goal targets per motion index, initialized once on first pelvis pose
     # {motion_idx: {"types": [...], "pos_w": [...], "vel_w": [...], "quat_w": [...]}}
     self._goals: dict = {}
+    self._goals_initialized = False
+    self._frozen_ball_pos_w: np.ndarray | None = (
+      None  # ball position frozen in world frame at contact end
+    )
 
     # other stuff from unitree's example
     self.time_ = 0.0
@@ -338,12 +342,12 @@ class ControlNode(Node):
       String, "deploy_robot/fsm", self.fsm_callback, 10
     )
 
-    # Perception subscribers (all world frame)
+    # Perception subscribers
     self.pelvis_pose_sub = self.create_subscription(
       PoseStamped, "/g1_pelvis/pose", self.pelvis_pose_callback, 10
     )
     self.ball_pose_sub = self.create_subscription(
-      PoseStamped, "/ball/pose", self.ball_pose_callback, 10
+      PoseStamped, "/ball/target_pose", self.ball_pose_callback, 10
     )
 
     # sensor publish timer
@@ -401,12 +405,9 @@ class ControlNode(Node):
   def motion_frame_callback(self, msg: Float64):
     self.motion_frame = int(msg.data)
 
-  # which motion callback
+  # which motion callback — motion index is now set by ball proximity, not joystick
   def which_motion_callback(self, msg):
-    new_idx = 1 if msg.data[2] > 0.0 else 0
-    if new_idx != self.motion_idx:
-      self.motion_idx = new_idx
-      self.init_goals(self.pelvis_pose_position, self.pelvis_pose_quaternion)
+    pass
 
   # publish sensor data to ROS2 topics
   def publish_sensor_data(self):
@@ -460,23 +461,27 @@ class ControlNode(Node):
     # compute goals in anchor (pelvis) frame
     goals_msg = Float32MultiArray()
     with self.sensor_lock:
-      pelvis_pos = self.pelvis_pose_position
-      pelvis_quat = self.pelvis_pose_quaternion
-    if pelvis_pos is not None and pelvis_quat is not None:
-      pelvis_pos = np.array(pelvis_pos, dtype=np.float32)
-      pelvis_quat = np.array(pelvis_quat, dtype=np.float32)
-      # if self.motion_idx not in self._goals:
-      if self.motion_frame == 0: 
-        self.init_goals(pelvis_pos, pelvis_quat)
+      pelvis_pos = np.array(self.pelvis_pose_position, dtype=np.float32)
+      pelvis_quat = np.array(self.pelvis_pose_quaternion, dtype=np.float32)
+      ball_pos_b = np.array(self.ball_pose_position, dtype=np.float32)
+    if self._goals_initialized:
       R = quat_to_rotation_matrix(pelvis_quat)
       pelvis_quat_inv = quat_conjugate(pelvis_quat)
       g = self._goals[self.motion_idx]
+      motion_frame = self.motion_frame
+      contact_end_frame = int(
+        self.motion_num_frames[self.motion_idx]
+        * (self.contact_phases[self.motion_idx] + self.contact_duration)
+      )
       goal_vecs = []
       for goal_type, goal_pos_w, vel_w, goal_quat_w in zip(
         g["types"], g["pos_w"], g["vel_w"], g["quat_w"]
       ):
         if goal_type == "position":
-          goal_vecs.append(R.T @ (goal_pos_w - pelvis_pos))
+          if motion_frame == 0:
+            goal_vecs.append(R.T @ (goal_pos_w - pelvis_pos))
+          else:
+            goal_vecs.append(ball_pos_b)
         elif goal_type == "velocity":
           goal_vecs.append(vel_w)
         elif goal_type == "orientation":
@@ -528,12 +533,44 @@ class ControlNode(Node):
       self.pelvis_pose_position = np.array([p.x, p.y, p.z], dtype=np.float64)
       self.pelvis_pose_quaternion = np.array([q.w, q.x, q.y, q.z], dtype=np.float64)
 
+    if not self._goals_initialized:
+      pelvis_pos = np.array(self.pelvis_pose_position, dtype=np.float32)
+      pelvis_quat = np.array(self.pelvis_pose_quaternion, dtype=np.float32)
+      old_idx = self.motion_idx
+      for idx in range(len(self.motion_num_frames)):
+        self.motion_idx = idx
+        self.init_goals(pelvis_pos, pelvis_quat)
+      self.motion_idx = old_idx
+      self._goals_initialized = True
+
   def ball_pose_callback(self, msg: PoseStamped):
     p = msg.pose.position
-    q = msg.pose.orientation  # ROS: (x, y, z, w)
+    # ball position is in the pelvis frame
+    ball_pos_b = np.array([p.x, p.y, p.z], dtype=np.float32)
+
     with self.sensor_lock:
-      self.ball_pose_position = np.array([p.x, p.y, p.z], dtype=np.float64)
-      self.ball_pose_quaternion = np.array([q.w, q.x, q.y, q.z], dtype=np.float64)
+      self.ball_pose_position = ball_pos_b
+      pelvis_pos = np.array(self.pelvis_pose_position, dtype=np.float32)
+      pelvis_quat = np.array(self.pelvis_pose_quaternion, dtype=np.float32)
+
+    if not self._goals_initialized:
+      return
+
+    # select the motion whose nominal position goal is closest to the ball
+    R = quat_to_rotation_matrix(pelvis_quat)
+    best_idx = self.motion_idx
+    best_dist = float("inf")
+    for idx in range(len(self.motion_num_frames)):
+      g = self._goals[idx]
+      for goal_type, goal_pos_w in zip(g["types"], g["pos_w"]):
+        if goal_type == "position":
+          nominal_b = R.T @ (goal_pos_w - pelvis_pos)
+          dist = float(np.linalg.norm(ball_pos_b - nominal_b))
+          if dist < best_dist:
+            best_dist = dist
+            best_idx = idx
+          break  # only use the first position goal per motion
+    self.motion_idx = best_idx
 
   # main control loop to send low-level commands
   def LowCmdWrite(self):

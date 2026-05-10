@@ -44,7 +44,7 @@ action_scale: [0.548, 0.351, 0.548, 0.351, 0.439, 0.439,
 
 control_dt: 0.02
 contact_phase: [0.345, 0.345]
-contact_duration: 0.3
+contact_duration: 0.1
 
 goals:
   - name: "forehand_position"
