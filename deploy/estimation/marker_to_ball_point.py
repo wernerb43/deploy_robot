@@ -8,6 +8,9 @@ GRAVITY = 9.81
 ROBOT_MARKER_EXCL_RADIUS = 0.05  # metres
 MAHALANOBIS_GATE = 7.815  # chi-squared, 3 DOF, 95%
 NUM_ROBOT_MARKERS = 5
+KF_POS_VAR_THRESHOLD = (
+  0.01  # m^2; physics filter inactive until all position variances drop below this
+)
 
 
 class BallTracker(Node):
@@ -28,6 +31,11 @@ class BallTracker(Node):
     # observation matrix: position only
     self.H = np.zeros((3, 6), dtype=np.float64)
     self.H[0, 0] = self.H[1, 1] = self.H[2, 2] = 1.0
+
+    # for outlier rejection, we can keep a short history of recent ball detections, and reject new detections that are too far from the moving average of the detections
+    self.filter_history_length = 10
+    self.filter_positions = np.zeros((self.filter_history_length, 3), dtype=np.float64)
+    self.stdevs_to_reject = 3.0
 
     for i in range(NUM_ROBOT_MARKERS):
       self.create_subscription(
@@ -65,24 +73,31 @@ class BallTracker(Node):
   def pointcloud_callback(self, msg: PointCloud):
     now = self.get_clock().now().nanoseconds * 1e-9
 
+    candidates = []
     for p in msg.points:
       if self._is_robot_marker(p):
         continue
-      #   print(f"Ball detected at ({p.x:.2f}, {p.y:.2f}, {p.z:.2f})")
-      z = np.array(
-        [p.x, p.y, p.z], dtype=np.float64
-      )  # either the ball point or another spurious one
+      if p.x > 1.50:  # at 1.5 this seems to work well
+        continue
+      candidates.append(np.array([p.x, p.y, p.z], dtype=np.float64))
 
-      if not self.kf_initialized:
-        self.kf_state[:3] = z
-        self.kf_initialized = True
-        self.kf_last_time = now
-        self._publish_estimate(msg.header.stamp)
-        return
+    if not candidates:
+      return
 
-      self._kf_update(z, now)
+    if not self.kf_initialized:
+      z = candidates[0]
+      self.kf_state[:3] = z
+      self.kf_initialized = True
+      self.kf_last_time = now
       self._publish_estimate(msg.header.stamp)
       return
+
+    # pick the candidate closest to the current KF predicted position
+    predicted = self.kf_state[:3]
+    z = min(candidates, key=lambda c: float(np.sum((c - predicted) ** 2)))
+
+    self._kf_update(z, now)
+    self._publish_estimate(msg.header.stamp)
 
   def timer_callback(self):
     if not self.kf_initialized:

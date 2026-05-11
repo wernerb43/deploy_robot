@@ -59,7 +59,7 @@ class BallEstimatorNode(Node):
     self.kf_last_time: float | None = None
 
     config_path = os.path.join(
-      os.path.dirname(__file__), "..", "configs", "g1_29dof_tasknpoint.yaml"
+      os.path.dirname(__file__), "..", "configs", "g1_29dof_tasknpoint_multimotion.yaml"
     )
     with open(config_path) as f:
       config = yaml.safe_load(f)
