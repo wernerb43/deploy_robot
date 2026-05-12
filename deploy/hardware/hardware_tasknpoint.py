@@ -172,9 +172,6 @@ class ControlNode(Node):
     # {motion_idx: {"types": [...], "pos_w": [...], "vel_w": [...], "quat_w": [...]}}
     self._goals: dict = {}
     self._goals_initialized = False
-    self._frozen_ball_pos_w: np.ndarray | None = (
-      None  # ball position frozen in world frame at contact end
-    )
 
     # other stuff from unitree's example
     self.time_ = 0.0
@@ -349,7 +346,6 @@ class ControlNode(Node):
     self.ball_pose_sub = self.create_subscription(
       PoseStamped, "/ball/target_pose", self.ball_pose_callback, 10
     )
-
     # sensor publish timer
     self.pub_timer = self.create_timer(ROS_SENSOR_PUBLISH_DT, self.publish_sensor_data)
 
@@ -545,7 +541,7 @@ class ControlNode(Node):
 
   def ball_pose_callback(self, msg: PoseStamped):
     p = msg.pose.position
-    # ball position is in the pelvis frame
+    # target positions are always sent in local frame!
     ball_pos_b = np.array([p.x, p.y, p.z], dtype=np.float32)
 
     with self.sensor_lock:

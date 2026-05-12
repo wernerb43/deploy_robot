@@ -34,7 +34,8 @@ class BallEstimatorPlottingNode(Node):
     self.lock = threading.Lock()
     self.ball_pos: np.ndarray | None = None
     self.pelvis_pos: np.ndarray | None = None
-    self.target_pos: np.ndarray | None = None
+    self.pelvis_quat: np.ndarray = np.array([0.0, 0.0, 0.0, 1.0])
+    self.target_pos_body: np.ndarray | None = None  # in pelvis frame
     self.trajectory: np.ndarray | None = None  # shape (N, 3)
     self.ball_history: deque[tuple[float, np.ndarray]] = deque(maxlen=HISTORY_LEN)
 
@@ -57,10 +58,18 @@ class BallEstimatorPlottingNode(Node):
       self.pelvis_pos = np.array(
         [msg.pose.position.x, msg.pose.position.y, msg.pose.position.z]
       )
+      self.pelvis_quat = np.array(
+        [
+          msg.pose.orientation.x,
+          msg.pose.orientation.y,
+          msg.pose.orientation.z,
+          msg.pose.orientation.w,
+        ]
+      )
 
   def target_callback(self, msg: PoseStamped):
     with self.lock:
-      self.target_pos = np.array(
+      self.target_pos_body = np.array(
         [msg.pose.position.x, msg.pose.position.y, msg.pose.position.z]
       )
 
@@ -73,7 +82,12 @@ class BallEstimatorPlottingNode(Node):
     with self.lock:
       ball = self.ball_pos.copy() if self.ball_pos is not None else None
       pelvis = self.pelvis_pos.copy() if self.pelvis_pos is not None else None
-      target = self.target_pos.copy() if self.target_pos is not None else None
+      target = None
+      if self.target_pos_body is not None and self.pelvis_pos is not None:
+        q_vec = self.pelvis_quat[:3]
+        qw = self.pelvis_quat[3]
+        t = 2.0 * np.cross(q_vec, self.target_pos_body)
+        target = self.target_pos_body + qw * t + np.cross(q_vec, t) + self.pelvis_pos
       traj = self.trajectory.copy() if self.trajectory is not None else None
       history = list(self.ball_history)
     return ball, pelvis, target, traj, history

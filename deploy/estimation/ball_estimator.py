@@ -63,11 +63,13 @@ class BallEstimatorNode(Node):
     )
     with open(config_path) as f:
       config = yaml.safe_load(f)
-    goals = {g["name"]: g for g in config["goals"]}
-    self.nominal_target_pos_pelvis = np.array(
-      goals["forehand_position"]["vector"], dtype=np.float64
-    )
-    self.nominal_target_pos = np.zeros(3, dtype=np.float64)
+    position_goals = [g for g in config["goals"] if g["type"] == "position"]
+    self.nominal_target_pos_pelvis = [
+      np.array(g["vector"], dtype=np.float64) for g in position_goals
+    ]
+    self.nominal_target_pos = [np.zeros(3, dtype=np.float64) for _ in position_goals]
+    self.nominal_motion_indices = [int(g["motion_index"]) for g in position_goals]
+    self.target_motion_idx = self.nominal_motion_indices[0]
 
     self.lock = threading.Lock()
 
@@ -85,6 +87,7 @@ class BallEstimatorNode(Node):
     self.ball_trajectory_pub = self.create_publisher(
       Float32MultiArray, "/ball/trajectory", 10
     )
+    # self.which_motion = self.create_publisher(Float64, "/ball/which_motion", 10)
 
     self.create_timer(self.dt, self.timer_callback)
 
@@ -113,10 +116,11 @@ class BallEstimatorNode(Node):
     )
     q_vec = self.pelvis_quat[:3]
     qw = self.pelvis_quat[3]
-    t = 2.0 * np.cross(q_vec, self.nominal_target_pos_pelvis)
-    self.nominal_target_pos = (
-      self.nominal_target_pos_pelvis + qw * t + np.cross(q_vec, t) + self.pelvis_pos
-    )
+    for i, body_pos in enumerate(self.nominal_target_pos_pelvis):
+      t = 2.0 * np.cross(q_vec, body_pos)
+      self.nominal_target_pos[i] = (
+        body_pos + qw * t + np.cross(q_vec, t) + self.pelvis_pos
+      )
 
   # kalman filter update: estimate velocity and position of the ball from the measurements
   def filter_pose(self, z: np.ndarray):
@@ -161,24 +165,39 @@ class BallEstimatorNode(Node):
     self.ball_pos = self.kf_state[:3].copy()
     self.ball_vel = self.kf_state[3:].copy()
 
-  # given the estimated position and velocity, find the point closest to the robot target point in world frame along the ball's trajectory, this will be the target pos
+  # given the estimated position and velocity, find the point closest to either nominal target along the ball's trajectory
   def estimate_target_point(self):
     if len(self.ball_trajectory_positions) == 0:
-      self.target_pos = self.nominal_target_pos.copy()
+      dists = [np.sum((self.ball_pos - wp) ** 2) for wp in self.nominal_target_pos]
+      best_target_idx = int(np.argmin(dists))
+      self.target_pos = self.nominal_target_pos_pelvis[best_target_idx].copy()
+      self.target_motion_idx = self.nominal_motion_indices[best_target_idx]
       self.target_time = -1.0
       return
 
-    dists_sq = np.sum(
-      (self.ball_trajectory_positions - self.nominal_target_pos) ** 2, axis=1
-    )
-    idx = np.argmin(dists_sq)
+    best_dist_sq = float("inf")
+    best_traj_idx = 0
+    best_target_idx = 0
+    for i, world_target in enumerate(self.nominal_target_pos):
+      dists_sq = np.sum((self.ball_trajectory_positions - world_target) ** 2, axis=1)
+      idx = int(np.argmin(dists_sq))
+      if dists_sq[idx] < best_dist_sq:
+        best_dist_sq = float(dists_sq[idx])
+        best_traj_idx = idx
+        best_target_idx = i
 
-    if dists_sq[idx] > 1.0:  # closest point still far from target, fall back
-      self.target_pos = self.nominal_target_pos.copy()
+    self.target_motion_idx = self.nominal_motion_indices[best_target_idx]
+
+    if best_dist_sq > 1.0:  # closest point still far from both targets, fall back
+      self.target_pos = self.nominal_target_pos_pelvis[best_target_idx].copy()
       self.target_time = -1.0
     else:
-      self.target_pos = self.ball_trajectory_positions[idx].copy()
-      self.target_time = float(self.ball_trajectory_times[idx])
+      v = self.ball_trajectory_positions[best_traj_idx] - self.pelvis_pos
+      q_vec = self.pelvis_quat[:3]
+      qw = self.pelvis_quat[3]
+      t = 2.0 * np.cross(q_vec, v)
+      self.target_pos = v - qw * t + np.cross(q_vec, t)
+      self.target_time = float(self.ball_trajectory_times[best_traj_idx])
 
   def estimate_ball_trajectory(self):
     """
@@ -211,11 +230,16 @@ class BallEstimatorNode(Node):
         ts = np.append(ts, arc_duration)
 
       k = len(ts)
+      if n + k > max_pts:
+        ts = ts[: max_pts - n]
+        k = len(ts)
       buf_times[n : n + k] = t_elapsed + ts
       buf_positions[n : n + k, 0] = x + vx * ts
       buf_positions[n : n + k, 1] = y + vy * ts
       buf_positions[n : n + k, 2] = z + vz * ts - 0.5 * GRAVITY * ts**2
       n += k
+      if n >= max_pts:
+        break
 
       t_elapsed += t_bounce
 
@@ -237,12 +261,13 @@ class BallEstimatorNode(Node):
     self.publish_pose()
     self.publish_target_time()
     self.publish_trajectory()
+    # self.publish_which_motion()
 
   def publish_pose(self):
     msg = PoseStamped()
     msg.header.stamp = self.get_clock().now().to_msg()
     msg.header.frame_id = "world"
-    msg.pose.position.x = self.target_pos[0]  # in world frame (for all of these)
+    msg.pose.position.x = self.target_pos[0]  # in pelvis frame (for all of these)
     msg.pose.position.y = self.target_pos[1]
     msg.pose.position.z = self.target_pos[2]
     msg.pose.orientation.w = 1.0
@@ -261,6 +286,11 @@ class BallEstimatorNode(Node):
     msg = Float32MultiArray()
     msg.data = self.ball_trajectory_positions.flatten().tolist()
     self.ball_trajectory_pub.publish(msg)
+
+  # def publish_which_motion(self):
+  #   msg = Float64()
+  #   msg.data = float(self.target_motion_idx)
+  #   self.which_motion.publish(msg)
 
 
 ############################################################################
