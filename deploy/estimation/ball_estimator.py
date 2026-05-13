@@ -30,7 +30,7 @@ sys.path.append(ROOT_DIR)
 # ESTIMATOR NODE
 ############################################################################
 GRAVITY = 9.81
-COEFF_OF_RESTITUTION = 0.4
+COEFF_OF_RESTITUTION = 0.8
 
 
 class BallEstimatorNode(Node):
@@ -47,6 +47,7 @@ class BallEstimatorNode(Node):
     self.ball_trajectory_positions = np.zeros((0, 3), dtype=np.float64)
     self.ball_trajectory_times = np.zeros(0, dtype=np.float64)
     self.ball_trajectory_time_length = 5.0  # this is the amount of time in the future that the trajectory prediction should cover
+    self.cutoff_distance = 0.5
 
     self.dt = 0.02
 
@@ -188,7 +189,9 @@ class BallEstimatorNode(Node):
 
     self.target_motion_idx = self.nominal_motion_indices[best_target_idx]
 
-    if best_dist_sq > 1.0:  # closest point still far from both targets, fall back
+    if (
+      best_dist_sq > self.cutoff_distance
+    ):  # closest point still far from both targets, fall back
       self.target_pos = self.nominal_target_pos_pelvis[best_target_idx].copy()
       self.target_time = -1.0
     else:
@@ -196,8 +199,14 @@ class BallEstimatorNode(Node):
       q_vec = self.pelvis_quat[:3]
       qw = self.pelvis_quat[3]
       t = 2.0 * np.cross(q_vec, v)
+
       self.target_pos = v - qw * t + np.cross(q_vec, t)
       self.target_time = float(self.ball_trajectory_times[best_traj_idx])
+
+      # TODO OFFSETS HERE ARE HACKED, FIND OUT WHY AND FIX PROPERLY
+      self.target_pos[2] += (
+        0.13  # this is a hack to make the target point slightly above the ball, which seems to help with hitting
+      )
 
   def estimate_ball_trajectory(self):
     """

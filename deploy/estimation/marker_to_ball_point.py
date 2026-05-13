@@ -5,8 +5,9 @@ from sensor_msgs.msg import PointCloud
 from geometry_msgs.msg import PoseStamped, PointStamped
 
 GRAVITY = 9.81
-ROBOT_MARKER_EXCL_RADIUS = 0.05  # metres
+ROBOT_MARKER_EXCL_RADIUS = 0.1  # metres
 MAHALANOBIS_GATE = 7.815  # chi-squared, 3 DOF, 95%
+MARKER_OUTLIER_DISTANCE_THRESHOLD = 0.2  # metres; reject ball detections that are further than this from the KF prediction
 NUM_ROBOT_MARKERS = 5
 KF_POS_VAR_THRESHOLD = (
   0.01  # m^2; physics filter inactive until all position variances drop below this
@@ -36,6 +37,8 @@ class BallTracker(Node):
     self.filter_history_length = 10
     self.filter_positions = np.zeros((self.filter_history_length, 3), dtype=np.float64)
     self.stdevs_to_reject = 3.0
+
+    self.pending_points: list[np.ndarray] = []
 
     for i in range(NUM_ROBOT_MARKERS):
       self.create_subscription(
@@ -71,39 +74,34 @@ class BallTracker(Node):
     return False
 
   def pointcloud_callback(self, msg: PointCloud):
-    now = self.get_clock().now().nanoseconds * 1e-9
-
-    candidates = []
     for p in msg.points:
       if self._is_robot_marker(p):
         continue
-      if p.x > 1.50:  # at 1.5 this seems to work well
+      if p.x > 1.50:
         continue
-      candidates.append(np.array([p.x, p.y, p.z], dtype=np.float64))
-
-    if not candidates:
-      return
-
-    if not self.kf_initialized:
-      z = candidates[0]
-      self.kf_state[:3] = z
-      self.kf_initialized = True
-      self.kf_last_time = now
-      self._publish_estimate(msg.header.stamp)
-      return
-
-    # pick the candidate closest to the current KF predicted position
-    predicted = self.kf_state[:3]
-    z = min(candidates, key=lambda c: float(np.sum((c - predicted) ** 2)))
-
-    self._kf_update(z, now)
-    self._publish_estimate(msg.header.stamp)
+      self.pending_points.append(np.array([p.x, p.y, p.z], dtype=np.float64))
 
   def timer_callback(self):
-    if not self.kf_initialized:
-      return
     now = self.get_clock().now().nanoseconds * 1e-9
-    self._kf_predict(now)
+    candidates = self.pending_points
+    self.pending_points = []
+
+    if not self.kf_initialized:
+      if candidates:
+        self.kf_state[:3] = candidates[0]
+        self.kf_initialized = True
+        self.kf_last_time = now
+        self._publish_estimate(self.get_clock().now().to_msg())
+      return
+
+    if candidates:
+      predicted = self.kf_state[:3]
+      # print("candidates:", candidates, "predicted position:", predicted)
+      z = min(candidates, key=lambda c: float(np.sum((c - predicted) ** 2)))
+      self._kf_update(z, now)
+    else:
+      self._kf_predict(now)
+
     self._publish_estimate(self.get_clock().now().to_msg())
 
   def _kf_predict(self, now: float):
